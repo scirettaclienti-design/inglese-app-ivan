@@ -18,6 +18,7 @@ let tutorSpeechTimeout = null;
 
 // Session markdown for copy-paste summaries
 let sessionMarkdown = '';
+let serverDoneSpeaking = false;
 
 // Canvas visualizer setup
 const canvas = document.getElementById('waveform-canvas');
@@ -360,6 +361,8 @@ const connectionManager = new ConnectionStateManager();
 async function startSession() {
   isSessionRunning = true;
   nextStartTime = 0;
+  isTutorSpeaking = false;
+  serverDoneSpeaking = false;
   
   updateUIState('loading', 'Starting...');
   addLog('Inizializzazione microfono in corso...', 'system');
@@ -518,14 +521,19 @@ function handleJsonMessage(message) {
         wakeUpOverlay.classList.add('hidden');
         actionBtn.removeAttribute('disabled');
         updateUIState('paused', 'Ready');
-      } else if (message.message === 'Listening...') {
-        updateUIState('listening', 'Listening...');
+      } else if (message.message === 'Done') {
+        serverDoneSpeaking = true;
+        checkListeningTransition();
       } else if (message.message === 'Tutor is thinking...') {
         updateUIState('loading', 'Tutor is thinking...');
       }
       break;
     case 'transcript':
       addLog(message.text, message.speaker);
+      if (message.speaker === 'user') {
+        serverDoneSpeaking = false;
+        isTutorSpeaking = false;
+      }
       break;
     case 'summary':
       // Render the Session Summary Card Modal
@@ -670,10 +678,14 @@ function playBinaryAudioChunk(arrayBuffer) {
   const durationMs = (nextStartTime - currentTime) * 1000;
   tutorSpeechTimeout = setTimeout(() => {
     isTutorSpeaking = false;
-    if (isSessionRunning) {
-      updateUIState('listening', 'Listening...');
-    }
+    checkListeningTransition();
   }, durationMs);
+}
+
+function checkListeningTransition() {
+  if (serverDoneSpeaking && !isTutorSpeaking && isSessionRunning) {
+    updateUIState('listening', 'Listening...');
+  }
 }
 
 // Handle control button interaction

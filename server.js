@@ -79,55 +79,30 @@ wss.on('connection', async (ws) => {
     try {
       ws.send(JSON.stringify({ type: 'status', message: 'Tutor is thinking...' }));
       
-      let sentenceBuffer = '';
+      let completeResponse = '';
       
-      await openai.sendMessageStream(text, async (textChunk) => {
-        sentenceBuffer += textChunk;
-
-        // Split streaming text into complete sentences
-        let match;
-        while ((match = /[.?!;\n]/.exec(sentenceBuffer)) !== null) {
-          const sentenceIndex = match.index + 1;
-          const sentence = sentenceBuffer.substring(0, sentenceIndex).trim();
-          sentenceBuffer = sentenceBuffer.substring(sentenceIndex);
-
-          if (sentence.length > 0) {
-            ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
-
-            await openai.synthesizeStream(
-              sentence,
-              (audioChunk) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(audioChunk);
-                }
-              },
-              (ttsErr) => {
-                console.error('TTS synthesis error:', ttsErr);
-              }
-            );
-          }
-        }
+      // Get the full response from OpenAI Chat Completion
+      await openai.sendMessageStream(text, (textChunk) => {
+        completeResponse += textChunk;
       });
 
-      // Stream residual text buffer
-      if (sentenceBuffer.trim().length > 0) {
-        const sentence = sentenceBuffer.trim();
-        ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
-        
-        await openai.synthesizeStream(
-          sentence,
-          (audioChunk) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(audioChunk);
-            }
-          },
-          (ttsErr) => {
-            console.error('TTS residual error:', ttsErr);
-          }
-        );
-      }
+      // Send the clean, complete transcript block
+      ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: completeResponse }));
 
-      ws.send(JSON.stringify({ type: 'status', message: 'Listening...' }));
+      // Now synthesize the complete response in a single audio stream
+      ws.send(JSON.stringify({ type: 'status', message: 'Tutor is speaking...' }));
+      
+      await openai.synthesizeStream(
+        completeResponse,
+        (audioChunk) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(audioChunk);
+          }
+        }
+      );
+
+      // Tell client that the server is done sending audio chunks
+      ws.send(JSON.stringify({ type: 'status', message: 'Done' }));
     } catch (err) {
       console.error('Error processing user text:', err);
       ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
