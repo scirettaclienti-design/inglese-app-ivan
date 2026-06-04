@@ -1,0 +1,17 @@
+{
+  "name": "Fluency Tutor",
+  "short_name": "FluencyTutor",
+  "description": "Headless English Voice Tutor Agent",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070714",
+  "theme_color": "#0a0a16",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "inglese-voice-tutor",
+  "version": "2.0.0",
+  "description": "Headless English Voice Tutor Agent with Auto-Sleep & Email Reports",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^6.9.13"
+  }
+}

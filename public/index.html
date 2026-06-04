@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Fluency Tutor - Headless English Coach</title>
+  
+  <!-- SEO & PWA Meta Tags -->
+  <meta name="description" content="Un Voice Tutor Agent per lo studio dell'inglese avanzato focalizzato sui tuoi progetti digitali. Funziona a schermo spento.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0a16">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="brand">
+        <span class="pulse-dot"></span>
+        <h1>FluencyTutor</h1>
+      </div>
+      <div id="status-indicator" class="status-badge disconnected">Disconnected</div>
+    </header>
+
+    <main class="app-body">
+      <!-- Waveform Canvas Visualization -->
+      <div class="canvas-container">
+        <canvas id="waveform-canvas"></canvas>
+      </div>
+
+      <!-- Centered Interactive Voice Button -->
+      <div class="control-center">
+        <button id="action-btn" class="action-btn-inactive" aria-label="Start Session">
+          <div class="btn-ripple"></div>
+          <div class="btn-icon">
+            <!-- SVG Mic Icon -->
+            <svg id="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+            <!-- SVG Stop/Square Icon (hidden initially) -->
+            <svg id="stop-icon" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+            </svg>
+          </div>
+        </button>
+        <p id="helper-text" class="helper-text">Tap to start walking session</p>
+      </div>
+
+      <!-- Transcript & Debug Panel -->
+      <section class="transcript-panel">
+        <div class="panel-header">
+          <h2>Live Log & Vocabulary Upgrades</h2>
+          <button id="clear-log-btn" class="text-btn">Clear</button>
+        </div>
+        <div id="log-container" class="log-container">
+          <div class="log-entry system">Welcome to your Fluency Voice Coach. Click the button to start. Put your headphones on, place your iPhone in your pocket, and feel free to lock your screen during your walk.</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <div class="settings-container">
+        <input type="text" id="backend-url" placeholder="wss://your-backend.onrender.com" aria-label="Backend URL" />
+        <button id="save-url-btn" class="text-btn">Set Server</button>
+      </div>
+      <p>&copy; 2026 FluencyTutor • Background Audio Active</p>
+    </footer>
+  </div>
+
+  <!-- Audio elements for iOS Safari background lock bypass -->
+  <audio id="silent-loop" loop playsinline preload="auto"></audio>
+
+  <!-- PWA & Application Script -->
+  <script src="app.js"></script>
+</body>
+</html>
