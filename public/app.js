@@ -14,7 +14,7 @@ let speakerAnalyser = null;
 // Audio Playback Queue variables (for gapless playback)
 let nextStartTime = 0;
 let isTutorSpeaking = false;
-let tutorSpeechTimeout = null;
+let activeSources = [];
 
 // Session markdown for copy-paste summaries
 let sessionMarkdown = '';
@@ -373,7 +373,7 @@ async function startSession() {
     audioContext = new AudioContextClass({ sampleRate: 16000 });
     
     if (audioContext.state === 'suspended') {
-      await audioContext.resume();
+      audioContext.resume().catch(e => console.error('Error resuming audio context initially:', e));
     }
 
     // 2. Setup analysers
@@ -480,14 +480,16 @@ function stopSession(requestStop = true) {
     socket.send(JSON.stringify({ type: 'stop' }));
   }
 
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-  }
+  activeSources.forEach(s => {
+    try {
+      s.stop();
+    } catch (e) {}
+  });
+  activeSources = [];
 
-  if (tutorSpeechTimeout) {
-    clearTimeout(tutorSpeechTimeout);
-    tutorSpeechTimeout = null;
+  if (audioContext) {
+    audioContext.close().catch(e => console.error('Error closing audio context:', e));
+    audioContext = null;
   }
 }
 
@@ -642,8 +644,16 @@ copySummaryBtn.addEventListener('click', () => {
 });
 
 // Play tutor voice audio chunks seamlessly
-function playBinaryAudioChunk(arrayBuffer) {
-  if (!audioContext || audioContext.state === 'suspended') return;
+async function playBinaryAudioChunk(arrayBuffer) {
+  if (!audioContext) return;
+
+  if (audioContext.state === 'suspended') {
+    try {
+      await audioContext.resume();
+    } catch (e) {
+      console.error('Failed to resume AudioContext during playback:', e);
+    }
+  }
 
   const pcm16 = new Int16Array(arrayBuffer);
   const length = pcm16.length;
@@ -659,8 +669,12 @@ function playBinaryAudioChunk(arrayBuffer) {
   const source = audioContext.createBufferSource();
   source.buffer = audioBuffer;
   
-  source.connect(speakerAnalyser);
-  speakerAnalyser.connect(audioContext.destination);
+  if (speakerAnalyser) {
+    source.connect(speakerAnalyser);
+    speakerAnalyser.connect(audioContext.destination);
+  } else {
+    source.connect(audioContext.destination);
+  }
 
   const currentTime = audioContext.currentTime;
   if (nextStartTime < currentTime) {
@@ -674,15 +688,14 @@ function playBinaryAudioChunk(arrayBuffer) {
   
   nextStartTime += audioBuffer.duration;
 
-  if (tutorSpeechTimeout) {
-    clearTimeout(tutorSpeechTimeout);
-  }
-
-  const durationMs = (nextStartTime - currentTime) * 1000;
-  tutorSpeechTimeout = setTimeout(() => {
-    isTutorSpeaking = false;
-    checkListeningTransition();
-  }, durationMs);
+  activeSources.push(source);
+  source.onended = () => {
+    activeSources = activeSources.filter(s => s !== source);
+    if (activeSources.length === 0) {
+      isTutorSpeaking = false;
+      checkListeningTransition();
+    }
+  };
 }
 
 function checkListeningTransition() {
