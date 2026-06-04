@@ -16,9 +16,10 @@ export class GeminiService {
       console.error('Gemini API Key is missing!');
     }
     this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+    this.model = null;
     this.chat = null;
     this.history = [];
+    this.sessionStartTime = null;
   }
 
   /**
@@ -57,22 +58,26 @@ export class GeminiService {
       `- Word: "${v.word}" (Meaning: ${v.meaning}, Context: ${v.context})`
     ).join('\n');
 
-    // 4. Construct System Instructions
+    // 4. Construct Adaptive Didactic System Instructions
     const systemInstruction = `You are a real-life native English tutor and coach for advanced English (Fluency & Vocabulary), level B2/Intermediate.
 The student's name is Ivan. You will lead an audio-only, hands-free conversation with them while they are walking.
 
+DIDACTIC STRATEGY: ADAPTIVE LEARNING PATH
+You must guide the conversation through two active phases depending on the flow:
+- PHASE A (Technical & Business): Focus on Ivan's current digital projects (Dove Vai, Seanfinity, Mykonos Made in Italy, Parlami, Borgo Pigneto). Conduct mock pitches, roleplay investor meetings, or brainstorm technical roadblocks.
+- PHASE B (Generalist Transitions): Since Ivan is comfortable in technical jargon, you MUST force him out of his comfort zone. Approximately every 10 minutes (or if you notice the technical topics are exhausted), initiate a smooth, natural transition to general topics (such as philosophy, technology trends, global travel stories, culinary arts, or current events). This forces the activation of non-technical passive vocabulary.
+- VOCABULARY CHALLENGE: Challenge Ivan to upgrade his vocabulary. Actively suggest and use high-level synonyms. Encourage him to replace basic words: do not let him use "important" always; prompt him to use "pivotal", "crucial", or "paramount". Instead of "show", use "illustrate" or "demonstrate". Instead of "difficult", use "arduous" or "challenging".
+
 CRITICAL RULES:
-1. MAIN LANGUAGE: Speak in fluent, natural, spoken English suitable for a B2 learner. Keep sentences relatively clear but natural.
-2. CONVERSATIONAL TOPIC: Ask updates and conduct realistic simulations, pitches, or brainstorms about Ivan's current digital projects (Dove Vai, Seanfinity, Mykonos Made in Italy, Parlami, Borgo Pigneto). You must keep the conversation engaging and relevant to these projects.
-3. ITALIAN ASSISTANCE & BLOCKS:
+1. ITALIAN ASSISTANCE & BLOCKS:
    - If Ivan hesitates, gets stuck, makes a significant grammatical mistake, or asks a question in Italian, IMMEDIATELY explain the term, correction, or rule in Italian (clear, concise, helpful).
    - In the very next sentence, immediately switch back to English and ask a guiding question to resume the conversation in English.
-4. PRONUNCIATION & SPELLING RULE:
+2. PRONUNCIATION & SPELLING RULE:
    - If Ivan mispronounces a word (or if the transcribed text implies a phonetic spelling error), or if he asks how to pronounce a word, you MUST stop the conversation, spell the word out slowly letter-by-letter in capital letters separated by hyphens (e.g. "S-E-A-N-F-I-N-I-T-Y" or "P-R-O-N-U-N-C-I-A-T-I-O-N"), explain the correct pronunciation rule, and then resume the chat in English.
-5. NO SERVICE WORDS OR MARKUP: You are in an audio-only session. NEVER output text describing actions, emoji, or formatting like asterisks (e.g. do NOT output things like "*smiles*", "*laughs*", or emojis like 😊, or formatting like bolding "**"). Output ONLY clear, speakable text.
-6. INTEGRATION OF MEMORY:
-   - You must test Ivan on grammar/pronunciation errors he made in previous sessions. Try to lead questions that prompt him to use the correct forms.
-   - Encourage him to use the advanced vocabulary words he learned in previous sessions.
+3. NO SERVICE WORDS OR MARKUP: You are in an audio-only session. NEVER output text describing actions, emoji, or formatting like asterisks (e.g. do NOT output things like "*smiles*", "*laughs*", or emojis like 😊, or formatting like bolding "**"). Output ONLY clear, speakable text.
+4. DRILLING HISTORICAL MEMORY:
+   - You must review and drill Ivan on grammar/pronunciation errors he committed in previous sessions. Design questions that prompt him to use the correct forms.
+   - Force him to actively use the advanced vocabulary words he learned in previous sessions.
 
 Here is the history of errors Ivan committed in past sessions (Test him on these!):
 ${errorStrings || 'No past errors registered yet.'}
@@ -80,22 +85,27 @@ ${errorStrings || 'No past errors registered yet.'}
 Here is the list of vocabulary upgrades suggested in past sessions (Encourage him to use these!):
 ${vocabStrings || 'No vocabulary upgrades registered yet.'}
 
-Here is the context of Ivan's 5 active digital projects (Use this for conversation topics):
+Here is the context of Ivan's 5 active digital projects:
 ${projectsContext}
 
 Let's begin! Greet Ivan naturally and ask how his projects are going, or reference one of his past errors/vocabulary words to kick off the session. Keep your response relatively short (2-3 sentences max) to maintain a fast voice back-and-forth.`;
 
-    // 5. Initialize Gemini Chat with System Instructions
+    // 5. Initialize Gemini Chat (using supported gemini-2.0-flash model)
+    this.model = this.genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash',
+      systemInstruction: systemInstruction
+    });
+
     this.chat = this.model.startChat({
       generationConfig: {
-        maxOutputTokens: 250, // Keep responses short and conversational
+        maxOutputTokens: 250, 
         temperature: 0.7,
-      },
-      systemInstruction: systemInstruction,
+      }
     });
 
     this.history = [];
-    console.log('Gemini Chat session initialized with spelling and project rules.');
+    this.sessionStartTime = Date.now();
+    console.log('Gemini 2.0 Flash Chat session initialized with Adaptive Learning Path.');
   }
 
   /**
@@ -109,11 +119,20 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
       await this.initializeChat();
     }
 
-    // Save user message to history
+    const elapsedMinutes = Math.floor((Date.now() - this.sessionStartTime) / 60000);
+    const timeInstruction = `\n\n[SYSTEM REMINDER: Elapsed session time is ${elapsedMinutes} minutes. ` +
+      `${elapsedMinutes >= 10 ? 
+        'We are now in PHASE B (Generalist). You MUST guide the conversation to transition smoothly towards non-technical topics (travel, news, philosophy, daily life, culture, etc.) to challenge Ivan outside his technical projects comfort zone.' : 
+        'We are in PHASE A (Technical). Focus on Ivan\'s projects (Dove Vai, Seanfinity, Mykonos Made in Italy, Parlami, Borgo Pigneto).'} ` +
+      `Active Vocab Challenge: Prompt Ivan with sophisticated synonyms (e.g. replace 'important' with 'pivotal', 'crucial', 'paramount'). ` +
+      `Ensure you drill him on historical errors/words if appropriate.]`;
+
+    const promptWithReminder = text + timeInstruction;
+
     this.history.push({ role: 'user', parts: [{ text }] });
 
-    console.log(`Sending user transcript to Gemini: "${text}"`);
-    const result = await this.chat.sendMessageStream(text);
+    console.log(`Sending user transcript to Gemini: "${text}" (Session duration: ${elapsedMinutes} min)`);
+    const result = await this.chat.sendMessageStream(promptWithReminder);
     
     let completeResponse = '';
     for await (const chunk of result.stream) {
@@ -122,94 +141,98 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
       onTextChunk(chunkText);
     }
 
-    // Save model response to history
     this.history.push({ role: 'model', parts: [{ text: completeResponse }] });
     return completeResponse;
   }
 
   /**
    * Run compilation of mistakes, vocabulary upgrades, and email reports at the end of the session
+   * @returns {Promise<object|null>} - Returns the summary object containing scores, errors, vocab, and markdown
    */
   async compileSessionSummary() {
     if (this.history.length < 2) {
       console.log('Not enough conversation history to compile session summary.');
-      return;
+      return null;
     }
 
-    console.log('Compiling session summary (errors, vocabulary & email report)...');
+    console.log('Compiling unified session summary...');
     
-    // Format the conversation transcript for analysis
     const transcript = this.history.map(msg => 
       `${msg.role === 'user' ? 'User' : 'Tutor'}: ${msg.parts[0].text}`
     ).join('\n');
 
-    // Prompt to extract JSON database updates
-    const dbUpdatePrompt = `Analyze the following transcript of an English tutoring session.
-Extract two lists:
-1. Grammatical, syntax, lexical, or pronunciation errors made by the User. For each error, provide:
-   - "incorrect": the incorrect phrase the user said.
-   - "correct": the corrected version in natural English.
-   - "explanation": a very brief explanation in Italian of why it was wrong and the rule.
-2. New vocabulary words, idioms, or advanced expressions introduced by the Tutor during the session, or useful words suggested to improve Ivan's vocabulary. For each:
-   - "word": the english word or phrase.
-   - "meaning": a brief translation/explanation in Italian.
-   - "context": a short example sentence related to the user's digital projects.
-
-Return ONLY a valid JSON object matching the following schema. Do not output any markdown wrapper like \`\`\`json. Respond with raw JSON text only:
+    const analysisPrompt = `Analyze the following transcript of an English tutoring session.
+Compile the evaluation results into a single JSON object matching this exact schema:
 {
+  "score": 8, // An integer fluency score between 1 and 10 assessing speaking flow, pauses, and grammar.
   "grammar_errors": [
-    { "incorrect": "...", "correct": "...", "explanation": "..." }
+    { 
+      "incorrect": "phrase user said", 
+      "correct": "corrected natural version", 
+      "explanation": "brief rule explanation in Italian" 
+    }
   ],
   "vocabulary_upgrades": [
-    { "word": "...", "meaning": "...", "context": "..." }
-  ]
+    { 
+      "word": "advanced expression/word suggested", 
+      "meaning": "translation/meaning in Italian", 
+      "context": "short example sentence relevant to user's projects" 
+    }
+  ], // Provide exactly 3 advanced vocabulary upgrades
+  "markdown": "# Resoconto Sessione Didattica\\n\\n### 📊 Punteggio Fluidità: 8/10\\n\\n### ❌ Registro delle Correzioni\\n- *Errato*: \\\"...\\\" -> *Corretto*: \\\"...\\\" (Spiegazione: ...)\\n\\n### 🚀 Incremento Vocabolario\\n1. **Word**: meaning (Es: \\\"...\\\")\\n\\n### 📝 Valutazione Finale\\nUn breve paragrafo di 3-4 frasi in italiano con un feedback incoraggiante sui progressi, fluidità e uso dei sinonimi."
 }
 
-Here is the transcript:
-${transcript}`;
-
-    // Prompt to extract HTML email report
-    const emailPrompt = `You are a professional English tutor compiling a "Daily Progress Report" email for your student Ivan based on the following conversation transcript.
-Generate a beautiful, clean HTML email body (do not include standard <html>, <head> or <body> tags, just a styled <div> wrapper with modern CSS padding and styling).
-
-The email must contain ONLY these three sections:
-1. **Errori Grammaticali e di Pronuncia**: A neat table or list showing the errors Ivan committed, their corrections, and a brief explanation in Italian.
-2. **Upgrade Vocabolario (3 Nuovi Vocaboli)**: Exactly 3 new advanced words or idioms suggested during the session (or highly relevant to the project discussions), with their Italian meaning, and a short example sentence contextualized with his digital projects.
-3. **Feedback sulla Fluidità**: A brief, encouraging 3-4 sentence paragraph in Italian reviewing his speaking flow, pauses, or pronunciation patterns.
-
-Use a professional, clean layout (dark theme matching the app or simple corporate look, e.g. background #fafafa or #070714 with readable contrast, colored highlights, nice typography). Do not use any markdown wrapping (\`\`\`). Respond only with the HTML code.
+Return ONLY this valid JSON object. Do not wrap it in markdown blocks or write any text other than the JSON string.
 
 Here is the transcript:
 ${transcript}`;
 
     try {
-      // 1. Compile DB Updates
+      // Compile using gemini-2.0-flash (highly capable and fast structured outputs)
       const summaryModel = this.genAI.getGenerativeModel({ 
-        model: 'gemini-1.5-flash',
-        generationConfig: { responseMimeType: 'application/json' }
+        model: 'gemini-2.0-flash',
+        generationConfig: { 
+          responseMimeType: 'application/json',
+          temperature: 0.2
+        }
       });
       
-      const dbResponse = await summaryModel.generateContent(dbUpdatePrompt);
-      const dbJsonText = dbResponse.response.text();
-      const dbSummary = JSON.parse(dbJsonText);
-      await this.saveSummaryToDb(dbSummary);
-      console.log('Database memory successfully updated.');
+      const response = await summaryModel.generateContent(analysisPrompt);
+      const jsonText = response.response.text();
+      console.log('Gemini Analysis JSON output:', jsonText);
 
-      // 2. Generate Email Report HTML
-      const reportModel = this.genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const emailResponse = await reportModel.generateContent(emailPrompt);
-      const emailHtml = emailResponse.response.text().trim();
+      const summary = JSON.parse(jsonText);
       
-      // 3. Dispatch Email Report
-      const { sendEmailReport } = await import('./email.js');
-      const today = new Date().toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
-      const subject = `Daily Progress Report - ${today}`;
-      await sendEmailReport(subject, emailHtml);
+      // Save results to local JSON db
+      await this.saveSummaryToDb(summary);
 
-      console.log('Session evaluation and report dispatch completed!');
+      // Email dispatch report (runs in background)
+      try {
+        const { sendEmailReport } = await import('./email.js');
+        const today = new Date().toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+        const subject = `Daily Progress Report - ${today}`;
+        
+        // Convert Markdown to basic HTML for email compatibility
+        const htmlBody = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; padding: 20px; color: #333; line-height: 1.6;">
+            ${summary.markdown
+              .replace(/# (.*)/g, '<h2>$1</h2>')
+              .replace(/### (.*)/g, '<h3>$1</h3>')
+              .replace(/\n/g, '<br>')
+              .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+              .replace(/\*(.*?)\*/g, '<em>$1</em>')}
+          </div>
+        `;
+        await sendEmailReport(subject, htmlBody);
+      } catch (emailErr) {
+        console.error('Email report dispatch failed:', emailErr);
+      }
+
+      return summary;
 
     } catch (err) {
-      console.error('Failed to compile session summary and dispatch email:', err);
+      console.error('Failed to compile session summary:', err);
+      return null;
     }
   }
 
@@ -227,7 +250,6 @@ ${transcript}`;
       // Merge Grammar Errors
       if (summary.grammar_errors && Array.isArray(summary.grammar_errors)) {
         summary.grammar_errors.forEach(newErr => {
-          // Avoid exact duplicates
           const exists = currentDb.grammar_errors.some(
             err => err.incorrect.toLowerCase() === newErr.incorrect.toLowerCase()
           );

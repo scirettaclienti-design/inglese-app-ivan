@@ -32,13 +32,12 @@ app.get('/status', (req, res) => {
 });
 
 // STANDBY & AUTO-SLEEP LOGIC
-// When no users are connected, wait 10 minutes, then shutdown process (standby)
 let standbyTimer = null;
 const STANDBY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 function startStandbyTimer() {
   if (standbyTimer) return;
-  console.log(`No active clients. Standby timer started: server will shut down in 10 minutes to save resources.`);
+  console.log(`No active clients. Standby timer started: server will shut down in 10 minutes.`);
   standbyTimer = setTimeout(() => {
     console.log('Standby timer expired. Shutting down server to standby/sleep state...');
     process.exit(0);
@@ -65,6 +64,7 @@ wss.on('connection', async (ws) => {
   const tts = new TtsService();
   let deepgram = null;
   let isSessionActive = false;
+  let isSummaryCompiled = false; // Prevents duplicate summaries/emails
 
   // Initialize Gemini Chat session
   try {
@@ -77,57 +77,26 @@ wss.on('connection', async (ws) => {
     return;
   }
 
-  // Set up Deepgram STT
-  deepgram = new DeepgramService(
-    async (event) => {
-      // Transcription received from Deepgram
-      if (event.isFinal && event.text.trim().length > 0) {
-        // Send user transcript to browser
-        ws.send(JSON.stringify({ type: 'transcript', speaker: 'user', text: event.text }));
+  // Core function to process text
+  async function processUserText(text) {
+    try {
+      ws.send(JSON.stringify({ type: 'status', message: 'Tutor is thinking...' }));
+      
+      let sentenceBuffer = '';
+      
+      await gemini.sendMessageStream(text, async (textChunk) => {
+        sentenceBuffer += textChunk;
 
-        try {
-          // Tell client that tutor is typing/thinking
-          ws.send(JSON.stringify({ type: 'status', message: 'Tutor is thinking...' }));
+        // Split streaming text into complete sentences
+        let match;
+        while ((match = /[.?!;\n]/.exec(sentenceBuffer)) !== null) {
+          const sentenceIndex = match.index + 1;
+          const sentence = sentenceBuffer.substring(0, sentenceIndex).trim();
+          sentenceBuffer = sentenceBuffer.substring(sentenceIndex);
 
-          let sentenceBuffer = '';
-          
-          // Send user text to Gemini and handle streaming response
-          await gemini.sendMessageStream(event.text, async (textChunk) => {
-            sentenceBuffer += textChunk;
-
-            // Extract complete clauses or sentences for TTS natural phrasing
-            let match;
-            while ((match = /[.?!;\n]/.exec(sentenceBuffer)) !== null) {
-              const sentenceIndex = match.index + 1;
-              const sentence = sentenceBuffer.substring(0, sentenceIndex).trim();
-              sentenceBuffer = sentenceBuffer.substring(sentenceIndex);
-
-              if (sentence.length > 0) {
-                // Send text transcript of this sentence to the browser
-                ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
-
-                // Send sentence to Google Cloud TTS and pipe the audio stream directly back to browser
-                await tts.synthesizeStream(
-                  sentence,
-                  (audioChunk) => {
-                    // Send binary audio chunks directly to client
-                    if (ws.readyState === WebSocket.OPEN) {
-                      ws.send(audioChunk);
-                    }
-                  },
-                  (ttsErr) => {
-                    console.error('GCloud TTS synthesis error:', ttsErr);
-                  }
-                );
-              }
-            }
-          });
-
-          // Process remaining text in sentence buffer
-          if (sentenceBuffer.trim().length > 0) {
-            const sentence = sentenceBuffer.trim();
+          if (sentence.length > 0) {
             ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
-            
+
             await tts.synthesizeStream(
               sentence,
               (audioChunk) => {
@@ -136,16 +105,44 @@ wss.on('connection', async (ws) => {
                 }
               },
               (ttsErr) => {
-                console.error('GCloud TTS final chunk error:', ttsErr);
+                console.error('TTS synthesis error:', ttsErr);
               }
             );
           }
-
-          ws.send(JSON.stringify({ type: 'status', message: 'Listening...' }));
-        } catch (geminiErr) {
-          console.error('Error during Gemini transaction:', geminiErr);
-          ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
         }
+      });
+
+      // Stream residual text buffer
+      if (sentenceBuffer.trim().length > 0) {
+        const sentence = sentenceBuffer.trim();
+        ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
+        
+        await tts.synthesizeStream(
+          sentence,
+          (audioChunk) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(audioChunk);
+            }
+          },
+          (ttsErr) => {
+            console.error('TTS residual error:', ttsErr);
+          }
+        );
+      }
+
+      ws.send(JSON.stringify({ type: 'status', message: 'Listening...' }));
+    } catch (err) {
+      console.error('Error processing user text:', err);
+      ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
+    }
+  }
+
+  // Set up Deepgram STT
+  deepgram = new DeepgramService(
+    async (event) => {
+      if (event.isFinal && event.text.trim().length > 0) {
+        ws.send(JSON.stringify({ type: 'transcript', speaker: 'user', text: event.text }));
+        await processUserText(event.text);
       }
     },
     (dgErr) => {
@@ -154,18 +151,17 @@ wss.on('connection', async (ws) => {
     }
   );
 
-  // Initialize Deepgram connection
   deepgram.connect();
 
   // Handle incoming WebSocket messages from the client
-  ws.on('message', (message, isBinary) => {
+  ws.on('message', async (message, isBinary) => {
     if (isBinary) {
-      // Direct raw audio chunks from client's microphone are forwarded to Deepgram
+      // Audio stream from mic
       if (deepgram && isSessionActive) {
         deepgram.sendAudio(message);
       }
     } else {
-      // Text commands from client
+      // Text commands
       try {
         const data = JSON.parse(message.toString());
         console.log('Received command:', data);
@@ -175,7 +171,29 @@ wss.on('connection', async (ws) => {
           ws.send(JSON.stringify({ type: 'status', message: 'Listening...' }));
         } else if (data.type === 'stop') {
           isSessionActive = false;
-          ws.send(JSON.stringify({ type: 'status', message: 'Paused' }));
+          ws.send(JSON.stringify({ type: 'status', message: 'Tutor is compiling summary...' }));
+          
+          if (!isSummaryCompiled) {
+            isSummaryCompiled = true;
+            try {
+              const summary = await gemini.compileSessionSummary();
+              if (summary) {
+                ws.send(JSON.stringify({
+                  type: 'summary',
+                  score: summary.score,
+                  errors: summary.grammar_errors,
+                  vocab: summary.vocabulary_upgrades,
+                  markdown: summary.markdown
+                }));
+              }
+            } catch (sumErr) {
+              console.error('Error compiling session summary on stop:', sumErr);
+            }
+          }
+          ws.send(JSON.stringify({ type: 'status', message: 'Ready' }));
+        } else if (data.type === 'test_chat') {
+          ws.send(JSON.stringify({ type: 'transcript', speaker: 'user', text: data.text }));
+          await processUserText(data.text);
         }
       } catch (err) {
         console.error('Error parsing client text message:', err);
@@ -192,14 +210,16 @@ wss.on('connection', async (ws) => {
       deepgram.close();
     }
 
-    // Call Gemini offline compiler to extract grammar errors and vocabulary upgrades, sending the email
-    try {
-      await gemini.compileSessionSummary();
-    } catch (compileErr) {
-      console.error('Error during end-of-session reporting:', compileErr);
+    // Auto-compile summary on connection drops if not compiled yet
+    if (!isSummaryCompiled) {
+      isSummaryCompiled = true;
+      try {
+        await gemini.compileSessionSummary();
+      } catch (compileErr) {
+        console.error('Error during end-of-session database merge:', compileErr);
+      }
     }
 
-    // Check if we need to enter standby/sleep mode
     if (wss.clients.size === 0) {
       startStandbyTimer();
     }

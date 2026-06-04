@@ -9,19 +9,28 @@
   <meta name="description" content="Un Voice Tutor Agent per lo studio dell'inglese avanzato focalizzato sui tuoi progetti digitali. Funziona a schermo spento.">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0a0a16">
+  <meta name="theme-color" content="#04040d">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
 
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
   
   <!-- CSS Stylesheet -->
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Connection Wake-Up Overlay (Active during Cold Start Standby) -->
+  <div id="wake-up-overlay" class="overlay-screen">
+    <div class="overlay-card">
+      <div class="spinner"></div>
+      <h2>Tutor is waking up...</h2>
+      <p>Initializing backend cloud engine. This may take 20-30 seconds if the server was asleep.</p>
+    </div>
+  </div>
+
   <div class="app-container">
     <header class="app-header">
       <div class="brand">
@@ -39,7 +48,7 @@
 
       <!-- Centered Interactive Voice Button -->
       <div class="control-center">
-        <button id="action-btn" class="action-btn-inactive" aria-label="Start Session">
+        <button id="action-btn" class="action-btn-inactive" aria-label="Start Session" disabled>
           <div class="btn-ripple"></div>
           <div class="btn-icon">
             <!-- SVG Mic Icon -->
@@ -69,6 +78,35 @@
         </div>
       </section>
     </main>
+
+    <!-- Session Summary Modal Card -->
+    <div id="summary-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <header class="modal-header">
+          <h3>Session Summary</h3>
+          <button id="close-modal-btn" class="close-btn">&times;</button>
+        </header>
+        <div class="modal-body">
+          <div class="score-wrapper">
+            <span class="score-title">Fluency Score</span>
+            <div id="summary-score" class="score-badge">--</div>
+          </div>
+          
+          <div class="summary-section">
+            <h4>Correction Log</h4>
+            <div id="summary-corrections" class="summary-list">No errors recorded.</div>
+          </div>
+
+          <div class="summary-section">
+            <h4>Vocabulary Boost</h4>
+            <div id="summary-vocab" class="summary-list">No new vocabularies recorded.</div>
+          </div>
+        </div>
+        <footer class="modal-footer">
+          <button id="copy-summary-btn" class="copy-btn">Copy Summary (Markdown)</button>
+        </footer>
+      </div>
+    </div>
 
     <footer class="app-footer">
       <div class="settings-container">
