@@ -10,31 +10,6 @@ const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, '../memory/db.json');
 const projectsPath = path.join(__dirname, '../memory/projects.md');
 
-// Helper to downsample 24kHz 16-bit PCM buffer to 16kHz 16-bit PCM buffer via linear interpolation
-function resample24To16(buffer24) {
-  const length24 = buffer24.length / 2;
-  const length16 = Math.floor(length24 * 2 / 3);
-  const samples16 = new Int16Array(length16);
-  
-  for (let i = 0; i < length16; i++) {
-    const pos24 = i * 1.5;
-    const idx = Math.floor(pos24);
-    const fraction = pos24 - idx;
-    
-    // Read 16-bit signed integers (little-endian)
-    const val1 = buffer24.readInt16LE(idx * 2);
-    
-    if (idx + 1 < length24) {
-      const val2 = buffer24.readInt16LE((idx + 1) * 2);
-      samples16[i] = Math.round(val1 * (1 - fraction) + val2 * fraction);
-    } else {
-      samples16[i] = val1;
-    }
-  }
-  
-  return Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength);
-}
-
 export class OpenaiService {
   constructor() {
     if (!config.openaiApiKey) {
@@ -43,6 +18,7 @@ export class OpenaiService {
     this.history = [];
     this.sessionStartTime = null;
     this.systemInstruction = '';
+    this.ttsCarryover = null;
   }
 
   /**
@@ -111,7 +87,8 @@ ${vocabStrings || 'No vocabulary upgrades registered yet.'}
 Here is the context of Ivan's 5 active digital projects:
 ${projectsContext}
 
-Let's begin! Greet Ivan naturally and ask how his projects are going, or reference one of his past errors/vocabulary words to kick off the session. Keep your response relatively short (2-3 sentences max) to maintain a fast voice back-and-forth.`;
+Let's begin! Greet Ivan naturally and ask how his projects are going, or reference one of his past errors/vocabulary words to kick off the session.
+CI DEVE ESSERE PIÙ DIALOGO: Non fare monologhi lunghi. Fai risposte corte (massimo 1-2 frasi) e incentiva Ivan a parlare. Fai domande brevi. Parla in modo calmo, rilassato e scandito. Keep your response short and concise (1-2 sentences max) to encourage more dialogue and back-and-forth interaction. Speak in a calm, clear, and relaxed tone.`;
 
     this.history = [];
     this.sessionStartTime = Date.now();
@@ -210,7 +187,7 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
   }
 
   /**
-   * Synthesize text speech via OpenAI Audio API, streaming back raw 16kHz PCM chunks (resampled from 24kHz)
+   * Synthesize text speech via OpenAI Audio API, streaming back raw 16kHz PCM chunks (resampled statefully from 24kHz)
    * @param {string} text - Text to synthesize
    * @param {function(Buffer)} onAudioChunk - Callback for each audio data buffer
    * @returns {Promise<void>}
@@ -225,8 +202,9 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
       body: JSON.stringify({
         model: 'tts-1',
         input: text,
-        voice: 'alloy', // User requested alloy or echo
-        response_format: 'pcm' // Outputs 24kHz 16-bit mono little-endian raw PCM
+        voice: 'alloy', // alloy or echo
+        response_format: 'pcm', // Outputs 24kHz 16-bit mono little-endian raw PCM
+        speed: 0.88 // Speaks in a slightly slower, calm, and well-articulated tone
       })
     });
 
@@ -236,31 +214,78 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
     }
 
     const reader = response.body;
-    let leftover = null;
 
     await new Promise((resolve, reject) => {
       reader.on('data', (chunk) => {
-        let data = chunk;
-        if (leftover) {
-          data = Buffer.concat([leftover, chunk]);
-          leftover = null;
+        // Concatenate with existing carryover from previous chunks
+        let totalBuffer = chunk;
+        if (this.ttsCarryover) {
+          totalBuffer = Buffer.concat([this.ttsCarryover, chunk]);
+          this.ttsCarryover = null;
         }
 
-        // If data length is odd, keep the last byte as leftover to maintain 16-bit word alignment
-        if (data.length % 2 !== 0) {
-          leftover = data.subarray(data.length - 1);
-          data = data.subarray(0, data.length - 1);
-        }
+        // 3 samples of 24kHz = 6 bytes. We downsample blocks of 3 samples into 2 samples of 16kHz.
+        const numBlocks = Math.floor(totalBuffer.length / 6);
+        const processLength = numBlocks * 6;
 
-        if (data.length > 0) {
-          // Downsample from 24kHz to 16kHz
-          const resampled = resample24To16(data);
-          onAudioChunk(resampled);
+        if (processLength > 0) {
+          const bufferToProcess = totalBuffer.subarray(0, processLength);
+
+          // Store remaining odd bytes as carryover for the next chunk
+          if (totalBuffer.length > processLength) {
+            this.ttsCarryover = totalBuffer.subarray(processLength);
+          }
+
+          const length16 = numBlocks * 2;
+          const samples16 = new Int16Array(length16);
+
+          for (let b = 0; b < numBlocks; b++) {
+            const offset24 = b * 6;
+            const s0 = bufferToProcess.readInt16LE(offset24);
+            const s1 = bufferToProcess.readInt16LE(offset24 + 2);
+            const s2 = bufferToProcess.readInt16LE(offset24 + 4);
+
+            // Linear interpolation downsampling (pos0=0 -> s0, pos1=1.5 -> s1*0.5 + s2*0.5)
+            samples16[b * 2] = s0;
+            samples16[b * 2 + 1] = Math.round(s1 * 0.5 + s2 * 0.5);
+          }
+
+          const outputChunk = Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength);
+          onAudioChunk(outputChunk);
+        } else {
+          // If chunk is less than 6 bytes, store all of it
+          this.ttsCarryover = totalBuffer;
         }
       });
+
       reader.on('end', () => {
+        // Process any leftover bytes at the end of the stream
+        if (this.ttsCarryover && this.ttsCarryover.length >= 2) {
+          const length24 = Math.floor(this.ttsCarryover.length / 2);
+          const length16 = Math.floor(length24 * 2 / 3);
+
+          if (length16 > 0) {
+            const samples16 = new Int16Array(length16);
+            for (let i = 0; i < length16; i++) {
+              const pos24 = i * 1.5;
+              const idx = Math.floor(pos24);
+              const fraction = pos24 - idx;
+
+              const val1 = this.ttsCarryover.readInt16LE(idx * 2);
+              if (idx + 1 < length24) {
+                const val2 = this.ttsCarryover.readInt16LE((idx + 1) * 2);
+                samples16[i] = Math.round(val1 * (1 - fraction) + val2 * fraction);
+              } else {
+                samples16[i] = val1;
+              }
+            }
+            onAudioChunk(Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength));
+          }
+        }
+        this.ttsCarryover = null;
         resolve();
       });
+
       reader.on('error', (err) => {
         reject(err);
       });

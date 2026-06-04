@@ -390,8 +390,8 @@ async function startSession() {
     silentGain.connect(audioContext.destination);
     silentSource.start();
 
-    // 4. Request microphone access
-    micStream = await navigator.mediaDevices.getUserMedia({
+    // 4. Request microphone access with an 8-second timeout to prevent hanging
+    const getUserMediaPromise = navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -399,6 +399,12 @@ async function startSession() {
         channelCount: 1,
       }
     });
+
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Microphone permission request timed out')), 8000)
+    );
+
+    micStream = await Promise.race([getUserMediaPromise, timeoutPromise]);
 
     // 5. Connect node streams
     micNode = audioContext.createMediaStreamSource(micStream);
