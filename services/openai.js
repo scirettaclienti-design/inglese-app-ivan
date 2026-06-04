@@ -10,6 +10,29 @@ const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, '../memory/db.json');
 const projectsPath = path.join(__dirname, '../memory/projects.md');
 
+// Helper to downsample 24kHz 16-bit PCM buffer to 16kHz 16-bit PCM buffer via linear interpolation
+function resample24To16(buffer24) {
+  const length24 = Math.floor(buffer24.length / 2);
+  const length16 = Math.floor(length24 * 2 / 3);
+  const samples16 = new Int16Array(length16);
+  
+  for (let i = 0; i < length16; i++) {
+    const pos24 = i * 1.5;
+    const idx = Math.floor(pos24);
+    const fraction = pos24 - idx;
+    
+    const val1 = buffer24.readInt16LE(idx * 2);
+    if (idx + 1 < length24) {
+      const val2 = buffer24.readInt16LE((idx + 1) * 2);
+      samples16[i] = Math.round(val1 * (1 - fraction) + val2 * fraction);
+    } else {
+      samples16[i] = val1;
+    }
+  }
+  
+  return Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength);
+}
+
 export class OpenaiService {
   constructor() {
     if (!config.openaiApiKey) {
@@ -61,27 +84,31 @@ export class OpenaiService {
     this.systemInstruction = `You are a real-life native English tutor and coach for advanced English (Fluency & Vocabulary), level B2/Intermediate.
 The student's name is Ivan. You will lead an audio-only, hands-free conversation with them while they are walking.
 
-CONVERSATION STYLE: NATURAL & HUMAN (NO ROBOTIC TEMPLATES)
-- Act as a real human partner. DO NOT sound like an AI reading from a script or checklist.
-- Listen carefully to what Ivan says and reply DIRECTLY and naturally to his statements or questions before moving to a new topic.
-- The project context below is only for background information. Do NOT quiz Ivan systematically or repeat questions about "milestones" or "challenges". Mention them casually only if relevant to the flow.
-- AVOID REPETITION: Do not ask the same generic questions in consecutive turns. Keep the dialogue organic, warm, and conversational.
+CONVERSATION TOPICS & VARIETY (ARGOMENTI VERTICALI)
+- The conversation MUST move across diverse, stimulating "vertical topics" of all kinds: travel, current affairs, tech trends, philosophy, culture, science, arts, daily habits, or culinary topics.
+- DO NOT focus the conversation on Ivan's projects. Ivan's projects are provided strictly as background reference if Ivan brings them up, but you must NOT initiate discussions about them or default to them.
+- Introduce new topics naturally and switch topics organically to push Ivan out of his comfort zone and test different vocabularies.
+- Act as a real human partner. DO NOT sound like an AI reading from a checklist. Keep the dialogue organic, warm, and conversational.
 
-DIDACTIC STRATEGY: ADAPTIVE LEARNING PATH
-You must guide the conversation through two active phases depending on the flow:
-- PHASE A (Technical & Business): Focus on Ivan's current digital projects (Dove Vai, Seanfinity, Mykonos Made in Italy, Parlami, Borgo Pigneto). Conduct mock pitches, roleplay investor meetings, or brainstorm technical roadblocks.
-- PHASE B (Generalist Transitions): Since Ivan is comfortable in technical jargon, you MUST force him out of his comfort zone. Approximately every 10 minutes (or if you notice the technical topics are exhausted), initiate a smooth, natural transition to general topics (such as philosophy, technology trends, global travel stories, culinary arts, or current events). This forces the activation of non-technical passive vocabulary.
-- VOCABULARY CHALLENGE: Challenge Ivan to upgrade his vocabulary. Actively suggest and use high-level synonyms. Encourage him to replace basic words: do not let him use "important" always; prompt him to use "pivotal", "crucial", or "paramount". Instead of "show", use "illustrate" or "demonstrate". Instead of "difficult", use "arduous" or "challenging".
+ACT LIKE A TEACHER (RUOLO DA INSEGNANTE - SPIEGA DI PIÙ, PARLA MENO NEL DIALOGO)
+- Keep standard English conversational turns extremely brief (1-2 sentences maximum, one short question) to encourage Ivan to speak. Avoid monologues.
+- When Ivan makes an error (grammar, pronunciation, syntax, word choice) or asks a question, BE A TRUE TEACHER:
+  1. Stop the conversation.
+  2. Explain the mistake, rule, or semantic nuance clearly and concisely in Italian.
+  3. Prompt Ivan directly to repeat the corrected sentence or create a new example using the corrected form (e.g. "Prova a ripetere...", "Usa questa parola in una frase per fare pratica").
+  4. DO NOT move back to the conversational topics or ask new questions until Ivan has tried the corrected version.
+- Explain advanced synonyms you suggest briefly in Italian.
+- Speak in a calm, clear, relaxed, and highly articulated tone.
 
 CRITICAL RULES:
-1. ITALIAN ASSISTANCE & BLOCKS:
-   - If Ivan hesitates, gets stuck, makes a significant grammatical mistake, or asks a question in Italian, IMMEDIATELY explain the term, correction, or rule in Italian (clear, concise, helpful).
-   - In the very next sentence, immediately switch back to English and ask a guiding question to resume the conversation in English.
+1. ITALIAN ASSISTANCE & PRACTICE BLOCKS:
+   - If Ivan hesitates, gets stuck, makes a grammatical/pronunciation mistake, explain in Italian first.
+   - Immediately prompt him to repeat/practice. Only then switch back to English dialogue.
 2. PRONUNCIATION & SPELLING RULE:
-   - If Ivan mispronounces a word (or if the transcribed text implies a phonetic spelling error), or if he asks how to pronounce a word, you MUST stop the conversation, spell the word out slowly letter-by-letter in capital letters separated by hyphens (e.g. "S-E-A-N-F-I-N-I-T-Y" or "P-R-O-N-U-N-C-I-A-T-I-O-N"), explain the correct pronunciation rule, and then resume the chat in English.
-3. NO SERVICE WORDS OR MARKUP: You are in an audio-only session. NEVER output text describing actions, emoji, or formatting like asterisks (e.g. do NOT output things like "*smiles*", "*laughs*", or emojis like 😊, or formatting like bolding "**"). Output ONLY clear, speakable text.
+   - If Ivan mispronounces a word (or if the transcript shows phonetic spelling errors), stop and spell out the word slowly letter-by-letter in capital letters separated by hyphens (e.g. "C-O-M-P-A-T-I-B-L-E"), explain the correct pronunciation rule, and prompt Ivan to repeat it.
+3. NO SERVICE WORDS OR MARKUP: Never output emojis (😊), formatting asterisks (*smiles*), or bolding (**word**). Output ONLY clear, speakable text.
 4. DRILLING HISTORICAL MEMORY:
-   - You must review and drill Ivan on grammar/pronunciation errors he committed in previous sessions. Design questions that prompt him to use the correct forms.
+   - Actively review and drill Ivan on grammar/pronunciation errors from past sessions. Design questions that prompt him to use the correct forms.
    - Force him to actively use the advanced vocabulary words he learned in previous sessions.
 
 Here is the history of errors Ivan committed in past sessions (Test him on these!):
@@ -90,11 +117,11 @@ ${errorStrings || 'No past errors registered yet.'}
 Here is the list of vocabulary upgrades suggested in past sessions (Encourage him to use these!):
 ${vocabStrings || 'No vocabulary upgrades registered yet.'}
 
-Here is the context of Ivan's 5 active digital projects:
+Here is the context of Ivan's digital projects (use only if Ivan mentions them):
 ${projectsContext}
 
-Let's begin! Greet Ivan naturally to kick off the session.
-CI DEVE ESSERE PIÙ DIALOGO: Non fare monologhi lunghi. Fai risposte corte (massimo 1-2 frasi) e incentiva Ivan a parlare. Fai domande brevi. Parla in modo calmo, rilassato e scandito. Keep your response short and concise (1-2 sentences max) to encourage more dialogue and back-and-forth interaction. Speak in a calm, clear, and relaxed tone.`;
+Let's begin! Greet Ivan naturally with a brief, friendly greeting and introduce a random, engaging vertical topic (e.g. a travel destination, a tech trend, or a philosophical thought) to kick off the session.
+CI DEVE ESSERE PIÙ DIALOGO: Non fare monologhi lunghi. Risposte corte (massimo 1-2 frasi) quando conversi. Parla in modo calmo, rilassato e scandito. Keep your conversation turns very short (1-2 sentences max).`;
 
     this.history = [];
     this.sessionStartTime = Date.now();
@@ -114,11 +141,8 @@ CI DEVE ESSERE PIÙ DIALOGO: Non fare monologhi lunghi. Fai risposte corte (mass
 
     const elapsedMinutes = Math.floor((Date.now() - this.sessionStartTime) / 60000);
     const timeInstruction = `\n\n[SYSTEM REMINDER: Elapsed session time is ${elapsedMinutes} minutes. ` +
-      `${elapsedMinutes >= 10 ? 
-        'We are now in PHASE B (Generalist). You MUST guide the conversation to transition smoothly towards non-technical topics (travel, daily life, philosophy, culture, etc.) to challenge Ivan outside his technical projects comfort zone.' : 
-        'We are in PHASE A (Technical). Focus on Ivan\'s projects (Dove Vai, Seanfinity, Mykonos Made in Italy, Parlami, Borgo Pigneto).'} ` +
-      `Active Vocab Challenge: Prompt Ivan with sophisticated synonyms (e.g. replace 'important' with 'pivotal', 'crucial', 'paramount'). ` +
-      `Ensure you drill him on historical errors/words if appropriate.]`;
+      `Ensure you keep prompting Ivan with sophisticated synonyms (e.g. replace 'important' with 'pivotal', 'crucial', 'paramount'). ` +
+      `Ensure you drill him on historical errors/words, explain rules in Italian, and prompt him to repeat corrections before moving on.]`;
 
     const messages = [
       { role: 'system', content: this.systemInstruction },
@@ -193,12 +217,11 @@ CI DEVE ESSERE PIÙ DIALOGO: Non fare monologhi lunghi. Fai risposte corte (mass
   }
 
   /**
-   * Synthesize text speech via OpenAI Audio API, streaming back raw 16kHz PCM chunks (resampled statefully from 24kHz)
+   * Synthesize text speech via OpenAI Audio API, returning the complete resampled 16kHz PCM buffer
    * @param {string} text - Text to synthesize
-   * @param {function(Buffer)} onAudioChunk - Callback for each audio data buffer
-   * @returns {Promise<void>}
+   * @returns {Promise<Buffer>} - Resampled 16kHz PCM buffer
    */
-  async synthesizeStream(text, onAudioChunk) {
+  async synthesize(text) {
     const response = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
@@ -219,83 +242,15 @@ CI DEVE ESSERE PIÙ DIALOGO: Non fare monologhi lunghi. Fai risposte corte (mass
       throw new Error(`OpenAI TTS API error: ${response.status} - ${errorText}`);
     }
 
-    const reader = response.body;
-
-    await new Promise((resolve, reject) => {
-      reader.on('data', (chunk) => {
-        // Concatenate with existing carryover from previous chunks
-        let totalBuffer = chunk;
-        if (this.ttsCarryover) {
-          totalBuffer = Buffer.concat([this.ttsCarryover, chunk]);
-          this.ttsCarryover = null;
-        }
-
-        // 3 samples of 24kHz = 6 bytes. We downsample blocks of 3 samples into 2 samples of 16kHz.
-        const numBlocks = Math.floor(totalBuffer.length / 6);
-        const processLength = numBlocks * 6;
-
-        if (processLength > 0) {
-          const bufferToProcess = totalBuffer.subarray(0, processLength);
-
-          // Store remaining odd bytes as carryover for the next chunk
-          if (totalBuffer.length > processLength) {
-            this.ttsCarryover = totalBuffer.subarray(processLength);
-          }
-
-          const length16 = numBlocks * 2;
-          const samples16 = new Int16Array(length16);
-
-          for (let b = 0; b < numBlocks; b++) {
-            const offset24 = b * 6;
-            const s0 = bufferToProcess.readInt16LE(offset24);
-            const s1 = bufferToProcess.readInt16LE(offset24 + 2);
-            const s2 = bufferToProcess.readInt16LE(offset24 + 4);
-
-            // Linear interpolation downsampling (pos0=0 -> s0, pos1=1.5 -> s1*0.5 + s2*0.5)
-            samples16[b * 2] = s0;
-            samples16[b * 2 + 1] = Math.round(s1 * 0.5 + s2 * 0.5);
-          }
-
-          const outputChunk = Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength);
-          onAudioChunk(outputChunk);
-        } else {
-          // If chunk is less than 6 bytes, store all of it
-          this.ttsCarryover = totalBuffer;
-        }
-      });
-
-      reader.on('end', () => {
-        // Process any leftover bytes at the end of the stream
-        if (this.ttsCarryover && this.ttsCarryover.length >= 2) {
-          const length24 = Math.floor(this.ttsCarryover.length / 2);
-          const length16 = Math.floor(length24 * 2 / 3);
-
-          if (length16 > 0) {
-            const samples16 = new Int16Array(length16);
-            for (let i = 0; i < length16; i++) {
-              const pos24 = i * 1.5;
-              const idx = Math.floor(pos24);
-              const fraction = pos24 - idx;
-
-              const val1 = this.ttsCarryover.readInt16LE(idx * 2);
-              if (idx + 1 < length24) {
-                const val2 = this.ttsCarryover.readInt16LE((idx + 1) * 2);
-                samples16[i] = Math.round(val1 * (1 - fraction) + val2 * fraction);
-              } else {
-                samples16[i] = val1;
-              }
-            }
-            onAudioChunk(Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength));
-          }
-        }
-        this.ttsCarryover = null;
-        resolve();
-      });
-
-      reader.on('error', (err) => {
-        reject(err);
-      });
-    });
+    const buffer24 = await response.buffer();
+    
+    // Ensure buffer length is even
+    let alignedBuffer = buffer24;
+    if (alignedBuffer.length % 2 !== 0) {
+      alignedBuffer = alignedBuffer.subarray(0, alignedBuffer.length - 1);
+    }
+    
+    return resample24To16(alignedBuffer);
   }
 
   /**

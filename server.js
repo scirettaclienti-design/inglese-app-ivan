@@ -92,14 +92,10 @@ wss.on('connection', async (ws) => {
       // Now synthesize the complete response in a single audio stream
       ws.send(JSON.stringify({ type: 'status', message: 'Tutor is speaking...' }));
       
-      await openai.synthesizeStream(
-        completeResponse,
-        (audioChunk) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(audioChunk);
-          }
-        }
-      );
+      const audioBuffer = await openai.synthesize(completeResponse);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(audioBuffer);
+      }
 
       // Tell client that the server is done sending audio chunks
       ws.send(JSON.stringify({ type: 'status', message: 'Done' }));

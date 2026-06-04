@@ -362,7 +362,7 @@ async function startSession() {
   isSessionRunning = true;
   nextStartTime = 0;
   isTutorSpeaking = false;
-  serverDoneSpeaking = false;
+  serverDoneSpeaking = true;
   
   updateUIState('loading', 'Starting...');
   addLog('Inizializzazione microfono in corso...', 'system');
@@ -428,7 +428,7 @@ async function startSession() {
 
     // 7. Microphonic stream downsampling callback
     scriptProcessor.onaudioprocess = (event) => {
-      if (!isSessionRunning || isTutorSpeaking) return;
+      if (!isSessionRunning || isTutorSpeaking || !serverDoneSpeaking) return;
 
       const inputBuffer = event.inputBuffer.getChannelData(0);
       const length = inputBuffer.length;
@@ -541,6 +541,9 @@ function handleJsonMessage(message) {
       break;
     case 'error':
       addLog(`Tutor Error: ${message.message}`, 'system');
+      serverDoneSpeaking = true;
+      isTutorSpeaking = false;
+      checkListeningTransition();
       break;
     default:
       console.log('Unhandled JSON message:', message);
