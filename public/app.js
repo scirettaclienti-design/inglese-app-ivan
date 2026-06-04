@@ -367,7 +367,7 @@ async function startSession() {
   try {
     // 1. Initialize Audio Context (16kHz downsampling)
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    audioContext = new AudioContextClass({ sampleRate: 24000 });
+    audioContext = new AudioContextClass({ sampleRate: 16000 });
     
     if (audioContext.state === 'suspended') {
       await audioContext.resume();
@@ -380,7 +380,7 @@ async function startSession() {
     speakerAnalyser.fftSize = 256;
 
     // 3. Keep AudioContext active in background
-    const silentBuffer = audioContext.createBuffer(1, 4096, 24000);
+    const silentBuffer = audioContext.createBuffer(1, 4096, 16000);
     const silentSource = audioContext.createBufferSource();
     silentSource.buffer = silentBuffer;
     silentSource.loop = true;
@@ -636,7 +636,7 @@ function playBinaryAudioChunk(arrayBuffer) {
     float32[i] = pcm16[i] / 32768.0;
   }
 
-  const audioBuffer = audioContext.createBuffer(1, length, 24000);
+  const audioBuffer = audioContext.createBuffer(1, length, 16000);
   audioBuffer.copyToChannel(float32, 0);
 
   const source = audioContext.createBufferSource();

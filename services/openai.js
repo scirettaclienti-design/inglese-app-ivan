@@ -10,6 +10,31 @@ const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, '../memory/db.json');
 const projectsPath = path.join(__dirname, '../memory/projects.md');
 
+// Helper to downsample 24kHz 16-bit PCM buffer to 16kHz 16-bit PCM buffer via linear interpolation
+function resample24To16(buffer24) {
+  const length24 = buffer24.length / 2;
+  const length16 = Math.floor(length24 * 2 / 3);
+  const samples16 = new Int16Array(length16);
+  
+  for (let i = 0; i < length16; i++) {
+    const pos24 = i * 1.5;
+    const idx = Math.floor(pos24);
+    const fraction = pos24 - idx;
+    
+    // Read 16-bit signed integers (little-endian)
+    const val1 = buffer24.readInt16LE(idx * 2);
+    
+    if (idx + 1 < length24) {
+      const val2 = buffer24.readInt16LE((idx + 1) * 2);
+      samples16[i] = Math.round(val1 * (1 - fraction) + val2 * fraction);
+    } else {
+      samples16[i] = val1;
+    }
+  }
+  
+  return Buffer.from(samples16.buffer, samples16.byteOffset, samples16.byteLength);
+}
+
 export class OpenaiService {
   constructor() {
     if (!config.openaiApiKey) {
@@ -185,7 +210,7 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
   }
 
   /**
-   * Synthesize text speech via OpenAI Audio API, streaming back raw 24kHz PCM chunks
+   * Synthesize text speech via OpenAI Audio API, streaming back raw 16kHz PCM chunks (resampled from 24kHz)
    * @param {string} text - Text to synthesize
    * @param {function(Buffer)} onAudioChunk - Callback for each audio data buffer
    * @returns {Promise<void>}
@@ -211,9 +236,27 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
     }
 
     const reader = response.body;
+    let leftover = null;
+
     await new Promise((resolve, reject) => {
       reader.on('data', (chunk) => {
-        onAudioChunk(chunk);
+        let data = chunk;
+        if (leftover) {
+          data = Buffer.concat([leftover, chunk]);
+          leftover = null;
+        }
+
+        // If data length is odd, keep the last byte as leftover to maintain 16-bit word alignment
+        if (data.length % 2 !== 0) {
+          leftover = data.subarray(data.length - 1);
+          data = data.subarray(0, data.length - 1);
+        }
+
+        if (data.length > 0) {
+          // Downsample from 24kHz to 16kHz
+          const resampled = resample24To16(data);
+          onAudioChunk(resampled);
+        }
       });
       reader.on('end', () => {
         resolve();

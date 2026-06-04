@@ -21,7 +21,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/status', (req, res) => {
   res.json({
     status: 'online',
-    voiceProvider: 'google-cloud-tts',
+    voiceProvider: 'openai',
     openaiKeyConfigured: !!config.openaiApiKey,
     deepgramKeyConfigured: !!config.deepgramApiKey,
     emailConfigured: !!config.resendApiKey || (!!config.smtpHost && !!config.smtpUser),
