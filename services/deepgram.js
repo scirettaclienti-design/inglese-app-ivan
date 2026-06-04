@@ -18,7 +18,7 @@ export class DeepgramService {
 
     // Set up Deepgram Live Streaming parameters
     // We request linear16 PCM at 16kHz, mono
-    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
+    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&encoding=linear16&sample_rate=24000&channels=1&interim_results=false&punctuate=true&endpointing=300';
     
     console.log('Connecting to Deepgram WebSocket...');
     this.ws = new WebSocket(url, {

@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -10,20 +10,18 @@ const __dirname = path.dirname(__filename);
 const dbPath = path.join(__dirname, '../memory/db.json');
 const projectsPath = path.join(__dirname, '../memory/projects.md');
 
-export class GeminiService {
+export class OpenaiService {
   constructor() {
-    if (!config.geminiApiKey) {
-      console.error('Gemini API Key is missing!');
+    if (!config.openaiApiKey) {
+      console.error('OpenAI API Key is missing!');
     }
-    this.genAI = new GoogleGenerativeAI(config.geminiApiKey);
-    this.model = null;
-    this.chat = null;
     this.history = [];
     this.sessionStartTime = null;
+    this.systemInstruction = '';
   }
 
   /**
-   * Load history database and project context, and initialize the Chat Session
+   * Load history database and project context, and initialize system prompt
    */
   async initializeChat() {
     // 1. Read Project Context
@@ -59,7 +57,7 @@ export class GeminiService {
     ).join('\n');
 
     // 4. Construct Adaptive Didactic System Instructions
-    const systemInstruction = `You are a real-life native English tutor and coach for advanced English (Fluency & Vocabulary), level B2/Intermediate.
+    this.systemInstruction = `You are a real-life native English tutor and coach for advanced English (Fluency & Vocabulary), level B2/Intermediate.
 The student's name is Ivan. You will lead an audio-only, hands-free conversation with them while they are walking.
 
 DIDACTIC STRATEGY: ADAPTIVE LEARNING PATH
@@ -90,59 +88,140 @@ ${projectsContext}
 
 Let's begin! Greet Ivan naturally and ask how his projects are going, or reference one of his past errors/vocabulary words to kick off the session. Keep your response relatively short (2-3 sentences max) to maintain a fast voice back-and-forth.`;
 
-    // 5. Initialize Gemini Chat (using supported gemini-2.0-flash model)
-    this.model = this.genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash',
-      systemInstruction: systemInstruction
-    });
-
-    this.chat = this.model.startChat({
-      generationConfig: {
-        maxOutputTokens: 250, 
-        temperature: 0.7,
-      }
-    });
-
     this.history = [];
     this.sessionStartTime = Date.now();
-    console.log('Gemini 2.0 Flash Chat session initialized with Adaptive Learning Path.');
+    console.log('OpenAI GPT-4o Chat session initialized with Adaptive Learning Path.');
   }
 
   /**
-   * Send user transcript to Gemini and stream the response
+   * Send user transcript to OpenAI and stream the text response
    * @param {string} text - User's transcription text
    * @param {function(string)} onTextChunk - Callback for each generated text chunk
    * @returns {Promise<string>} - Complete generated text
    */
   async sendMessageStream(text, onTextChunk) {
-    if (!this.chat) {
+    if (!this.sessionStartTime) {
       await this.initializeChat();
     }
 
     const elapsedMinutes = Math.floor((Date.now() - this.sessionStartTime) / 60000);
     const timeInstruction = `\n\n[SYSTEM REMINDER: Elapsed session time is ${elapsedMinutes} minutes. ` +
       `${elapsedMinutes >= 10 ? 
-        'We are now in PHASE B (Generalist). You MUST guide the conversation to transition smoothly towards non-technical topics (travel, news, philosophy, daily life, culture, etc.) to challenge Ivan outside his technical projects comfort zone.' : 
+        'We are now in PHASE B (Generalist). You MUST guide the conversation to transition smoothly towards non-technical topics (travel, daily life, philosophy, culture, etc.) to challenge Ivan outside his technical projects comfort zone.' : 
         'We are in PHASE A (Technical). Focus on Ivan\'s projects (Dove Vai, Seanfinity, Mykonos Made in Italy, Parlami, Borgo Pigneto).'} ` +
       `Active Vocab Challenge: Prompt Ivan with sophisticated synonyms (e.g. replace 'important' with 'pivotal', 'crucial', 'paramount'). ` +
       `Ensure you drill him on historical errors/words if appropriate.]`;
 
-    const promptWithReminder = text + timeInstruction;
+    const messages = [
+      { role: 'system', content: this.systemInstruction },
+      ...this.history,
+      { role: 'user', content: text + timeInstruction }
+    ];
 
-    this.history.push({ role: 'user', parts: [{ text }] });
-
-    console.log(`Sending user transcript to Gemini: "${text}" (Session duration: ${elapsedMinutes} min)`);
-    const result = await this.chat.sendMessageStream(promptWithReminder);
+    console.log(`Sending user transcript to OpenAI: "${text}" (Session duration: ${elapsedMinutes} min)`);
     
-    let completeResponse = '';
-    for await (const chunk of result.stream) {
-      const chunkText = chunk.text();
-      completeResponse += chunkText;
-      onTextChunk(chunkText);
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.openaiApiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: messages,
+        stream: true
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenAI API stream error: ${response.status} - ${errorText}`);
     }
 
-    this.history.push({ role: 'model', parts: [{ text: completeResponse }] });
+    let completeResponse = '';
+    const reader = response.body;
+
+    await new Promise((resolve, reject) => {
+      let buffer = '';
+      
+      reader.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // Keep trailing incomplete line in buffer
+
+        for (const line of lines) {
+          const cleanLine = line.trim();
+          if (cleanLine === '') continue;
+          if (cleanLine === 'data: [DONE]') continue;
+          if (cleanLine.startsWith('data: ')) {
+            try {
+              const parsed = JSON.parse(cleanLine.substring(6));
+              const delta = parsed.choices[0]?.delta?.content || '';
+              if (delta) {
+                completeResponse += delta;
+                onTextChunk(delta);
+              }
+            } catch (err) {
+              // Ignore partial JSON parsing errors
+            }
+          }
+        }
+      });
+
+      reader.on('end', () => {
+        resolve();
+      });
+
+      reader.on('error', (err) => {
+        reject(err);
+      });
+    });
+
+    // Record clean conversation history (without the hidden time reminders)
+    this.history.push({ role: 'user', content: text });
+    this.history.push({ role: 'assistant', content: completeResponse });
+
     return completeResponse;
+  }
+
+  /**
+   * Synthesize text speech via OpenAI Audio API, streaming back raw 24kHz PCM chunks
+   * @param {string} text - Text to synthesize
+   * @param {function(Buffer)} onAudioChunk - Callback for each audio data buffer
+   * @returns {Promise<void>}
+   */
+  async synthesizeStream(text, onAudioChunk) {
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.openaiApiKey}`
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        input: text,
+        voice: 'alloy', // User requested alloy or echo
+        response_format: 'pcm' // Outputs 24kHz 16-bit mono little-endian raw PCM
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenAI TTS API error: ${response.status} - ${errorText}`);
+    }
+
+    const reader = response.body;
+    await new Promise((resolve, reject) => {
+      reader.on('data', (chunk) => {
+        onAudioChunk(chunk);
+      });
+      reader.on('end', () => {
+        resolve();
+      });
+      reader.on('error', (err) => {
+        reject(err);
+      });
+    });
   }
 
   /**
@@ -155,10 +234,10 @@ Let's begin! Greet Ivan naturally and ask how his projects are going, or referen
       return null;
     }
 
-    console.log('Compiling unified session summary...');
+    console.log('Compiling unified session summary using OpenAI gpt-4o...');
     
     const transcript = this.history.map(msg => 
-      `${msg.role === 'user' ? 'User' : 'Tutor'}: ${msg.parts[0].text}`
+      `${msg.role === 'user' ? 'User' : 'Tutor'}: ${msg.content}`
     ).join('\n');
 
     const analysisPrompt = `Analyze the following transcript of an English tutoring session.
@@ -188,18 +267,31 @@ Here is the transcript:
 ${transcript}`;
 
     try {
-      // Compile using gemini-2.0-flash (highly capable and fast structured outputs)
-      const summaryModel = this.genAI.getGenerativeModel({ 
-        model: 'gemini-2.0-flash',
-        generationConfig: { 
-          responseMimeType: 'application/json',
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.openaiApiKey}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [
+            { role: 'system', content: 'You output JSON data only.' },
+            { role: 'user', content: analysisPrompt }
+          ],
+          response_format: { type: 'json_object' },
           temperature: 0.2
-        }
+        })
       });
-      
-      const response = await summaryModel.generateContent(analysisPrompt);
-      const jsonText = response.response.text();
-      console.log('Gemini Analysis JSON output:', jsonText);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenAI Summary API error: ${response.status} - ${errorText}`);
+      }
+
+      const result = await response.json();
+      const jsonText = result.choices[0]?.message?.content;
+      console.log('OpenAI Analysis JSON output:', jsonText);
 
       const summary = JSON.parse(jsonText);
       

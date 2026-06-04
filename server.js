@@ -5,8 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { DeepgramService } from './services/deepgram.js';
-import { GeminiService } from './services/gemini.js';
-import { TtsService } from './services/tts.js';
+import { OpenaiService } from './services/openai.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,9 +22,8 @@ app.get('/status', (req, res) => {
   res.json({
     status: 'online',
     voiceProvider: 'google-cloud-tts',
-    geminiKeyConfigured: !!config.geminiApiKey,
+    openaiKeyConfigured: !!config.openaiApiKey,
     deepgramKeyConfigured: !!config.deepgramApiKey,
-    googleTtsKeyConfigured: !!config.googleCloudTtsApiKey,
     emailConfigured: !!config.resendApiKey || (!!config.smtpHost && !!config.smtpUser),
     activeConnections: wss.clients.size
   });
@@ -60,15 +58,14 @@ wss.on('connection', async (ws) => {
   stopStandbyTimer();
   console.log('Client connected to WebSocket.');
 
-  const gemini = new GeminiService();
-  const tts = new TtsService();
+  const openai = new OpenaiService();
   let deepgram = null;
   let isSessionActive = false;
   let isSummaryCompiled = false; // Prevents duplicate summaries/emails
 
   // Initialize Gemini Chat session
   try {
-    await gemini.initializeChat();
+    await openai.initializeChat();
     ws.send(JSON.stringify({ type: 'status', message: 'Ready' }));
   } catch (err) {
     console.error('Failed to initialize Gemini:', err);
@@ -84,7 +81,7 @@ wss.on('connection', async (ws) => {
       
       let sentenceBuffer = '';
       
-      await gemini.sendMessageStream(text, async (textChunk) => {
+      await openai.sendMessageStream(text, async (textChunk) => {
         sentenceBuffer += textChunk;
 
         // Split streaming text into complete sentences
@@ -97,7 +94,7 @@ wss.on('connection', async (ws) => {
           if (sentence.length > 0) {
             ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
 
-            await tts.synthesizeStream(
+            await openai.synthesizeStream(
               sentence,
               (audioChunk) => {
                 if (ws.readyState === WebSocket.OPEN) {
@@ -117,7 +114,7 @@ wss.on('connection', async (ws) => {
         const sentence = sentenceBuffer.trim();
         ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: sentence }));
         
-        await tts.synthesizeStream(
+        await openai.synthesizeStream(
           sentence,
           (audioChunk) => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -176,7 +173,7 @@ wss.on('connection', async (ws) => {
           if (!isSummaryCompiled) {
             isSummaryCompiled = true;
             try {
-              const summary = await gemini.compileSessionSummary();
+              const summary = await openai.compileSessionSummary();
               if (summary) {
                 ws.send(JSON.stringify({
                   type: 'summary',
@@ -214,7 +211,7 @@ wss.on('connection', async (ws) => {
     if (!isSummaryCompiled) {
       isSummaryCompiled = true;
       try {
-        await gemini.compileSessionSummary();
+        await openai.compileSessionSummary();
       } catch (compileErr) {
         console.error('Error during end-of-session database merge:', compileErr);
       }
