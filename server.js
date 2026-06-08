@@ -64,6 +64,24 @@ wss.on('connection', async (ws) => {
   let isSummaryCompiled = false; // Prevents duplicate summaries/emails
   let currentTurn = null;        // { ac: AbortController, cancelled: boolean } for barge-in
 
+  // Heartbeat: keep the TCP connection alive across mobile NATs and prevent
+  // Render's free-tier from marking the socket as idle. Client browsers
+  // auto-respond to ping frames with pong (no app-level code required).
+  // If two consecutive pings go unanswered, force-terminate so the client
+  // reconnects via its own onclose -> startConnection() recovery loop.
+  let isClientAlive = true;
+  const heartbeatInterval = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!isClientAlive) {
+      console.log('Client heartbeat missed — terminating stale WebSocket.');
+      try { ws.terminate(); } catch (e) {}
+      return;
+    }
+    isClientAlive = false;
+    try { ws.ping(); } catch (e) {}
+  }, 15000);
+  ws.on('pong', () => { isClientAlive = true; });
+
   // Initialize OpenAI Chat session
   try {
     await openai.initializeChat();
@@ -246,6 +264,7 @@ wss.on('connection', async (ws) => {
   // Handle client disconnect or session close
   ws.on('close', async () => {
     console.log('Client disconnected. Stopping services and compiling session summary...');
+    clearInterval(heartbeatInterval);
     isSessionActive = false;
 
     if (deepgram) {

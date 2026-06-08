@@ -23,9 +23,13 @@ export class DeepgramService {
 
     this.shouldReconnect = true;
 
-    // language=multi lets nova-2 auto-detect between English and Italian (plus
-    // ES/FR/DE/PT/HI/RU/JA/NL) so Ivan can switch language mid-conversation.
-    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=multi&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
+    // Primary decoder locked to English to eliminate the Spanish false-positives
+    // we saw with language=multi ("Non ci sta" -> "No nos cabida").
+    // alternative_languages=it is included as an Italian secondary hint: if
+    // Deepgram supports it (undocumented at time of writing) we get bilingual
+    // support; if it's ignored, we degrade to strict English-only which is
+    // still the safe baseline. Either way Spanish is excluded.
+    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en&alternative_languages=it&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
 
     console.log('Connecting to Deepgram WebSocket...');
     this.ws = new WebSocket(url, {

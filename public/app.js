@@ -831,3 +831,25 @@ saveUrlBtn.addEventListener('click', () => {
 // Boot Connection State Manager immediately on page load to initiate wake-up
 connectionManager.startConnection();
 drawWave();
+
+// iOS recovery: when the tab returns to foreground after being backgrounded
+// (screen off in pocket), the JS runtime may have been suspended, the
+// AudioContext put into 'suspended' state, and the WebSocket silently dropped.
+// On every visibility flip back to visible while a session is active, force
+// a state check + recovery so the user doesn't have to tap anything.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !isSessionRunning) return;
+
+  console.log('[Visibility] Tab back in foreground — running recovery check.');
+
+  if (audioContext && audioContext.state === 'suspended') {
+    audioContext.resume().catch(e =>
+      console.error('[Visibility] Failed to resume AudioContext:', e)
+    );
+  }
+
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    console.log('[Visibility] WebSocket dropped while backgrounded — reconnecting.');
+    connectionManager.startConnection();
+  }
+});
