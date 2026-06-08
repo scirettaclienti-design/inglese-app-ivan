@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 import { config } from '../config.js';
 
-const KEEPALIVE_INTERVAL_MS = 5000;
-const RECONNECT_DELAY_MS = 800;
+const KEEPALIVE_INTERVAL_MS = 3000;
+const RECONNECT_DELAY_MS = 300;
 
 export class DeepgramService {
   constructor(onTranscript, onError) {
@@ -23,13 +23,12 @@ export class DeepgramService {
 
     this.shouldReconnect = true;
 
-    // Primary decoder locked to English to eliminate the Spanish false-positives
-    // we saw with language=multi ("Non ci sta" -> "No nos cabida").
-    // alternative_languages=it is included as an Italian secondary hint: if
-    // Deepgram supports it (undocumented at time of writing) we get bilingual
-    // support; if it's ignored, we degrade to strict English-only which is
-    // still the safe baseline. Either way Spanish is excluded.
-    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=en&alternative_languages=it&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
+    // language=multi restored: locking to English broke Italian understanding
+    // entirely (Ivan was transcribed as garbled English-phonetic text and the
+    // bilingual rule never triggered). Trade-off accepted: occasional Spanish
+    // false-positives on very short Italian utterances. Mitigation lives in
+    // the system prompt LANGUAGE PROTOCOL which still nudges replies to IT/EN.
+    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=multi&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
 
     console.log('Connecting to Deepgram WebSocket...');
     this.ws = new WebSocket(url, {

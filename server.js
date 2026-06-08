@@ -67,20 +67,22 @@ wss.on('connection', async (ws) => {
   // Heartbeat: keep the TCP connection alive across mobile NATs and prevent
   // Render's free-tier from marking the socket as idle. Client browsers
   // auto-respond to ping frames with pong (no app-level code required).
-  // If two consecutive pings go unanswered, force-terminate so the client
-  // reconnects via its own onclose -> startConnection() recovery loop.
-  let isClientAlive = true;
+  // Tolerate up to 2 missed pongs (~45s) before forcing a reconnect — iOS
+  // Safari can briefly throttle background network and a single missed pong
+  // is not a real disconnect.
+  let missedPongs = 0;
+  const MAX_MISSED_PONGS = 2;
   const heartbeatInterval = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) return;
-    if (!isClientAlive) {
-      console.log('Client heartbeat missed — terminating stale WebSocket.');
+    if (missedPongs >= MAX_MISSED_PONGS) {
+      console.log(`Client heartbeat missed ${missedPongs} times — terminating stale WebSocket.`);
       try { ws.terminate(); } catch (e) {}
       return;
     }
-    isClientAlive = false;
+    missedPongs++;
     try { ws.ping(); } catch (e) {}
   }, 15000);
-  ws.on('pong', () => { isClientAlive = true; });
+  ws.on('pong', () => { missedPongs = 0; });
 
   // Initialize OpenAI Chat session
   try {
