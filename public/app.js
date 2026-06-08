@@ -523,19 +523,27 @@ function handleJsonMessage(message) {
         wakeUpOverlay.classList.add('hidden');
         actionBtn.removeAttribute('disabled');
         updateUIState('paused', 'Ready');
-      } else if (message.message === 'Done') {
-        serverDoneSpeaking = true;
-        checkListeningTransition();
       } else if (message.message === 'Tutor is thinking...') {
         updateUIState('loading', 'Tutor is thinking...');
       }
       break;
+    case 'server_speaking':
+      // Tutor is about to (or did just) start emitting audio frames.
+      // Mute the mic immediately to prevent echo / spurious capture.
+      serverDoneSpeaking = false;
+      break;
+    case 'server_done':
+      // Last audio frame already on the wire. If nothing is queued for
+      // playback we can re-arm the mic right away, otherwise source.onended
+      // will pick up the transition.
+      serverDoneSpeaking = true;
+      if (activeSources.length === 0) {
+        isTutorSpeaking = false;
+        checkListeningTransition();
+      }
+      break;
     case 'transcript':
       addLog(message.text, message.speaker);
-      if (message.speaker === 'user') {
-        serverDoneSpeaking = false;
-        isTutorSpeaking = false;
-      }
       break;
     case 'summary':
       // Render the Session Summary Card Modal
@@ -701,6 +709,9 @@ async function playBinaryAudioChunk(arrayBuffer) {
 function checkListeningTransition() {
   if (serverDoneSpeaking && !isTutorSpeaking && isSessionRunning) {
     updateUIState('listening', 'Listening...');
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'user_listening' }));
+    }
   }
 }
 

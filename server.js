@@ -63,45 +63,92 @@ wss.on('connection', async (ws) => {
   let isSessionActive = false;
   let isSummaryCompiled = false; // Prevents duplicate summaries/emails
 
-  // Initialize Gemini Chat session
+  // Initialize OpenAI Chat session
   try {
     await openai.initializeChat();
     ws.send(JSON.stringify({ type: 'status', message: 'Ready' }));
   } catch (err) {
-    console.error('Failed to initialize Gemini:', err);
+    console.error('Failed to initialize OpenAI:', err);
     ws.send(JSON.stringify({ type: 'error', message: 'Failed to initialize Tutor Engine' }));
     ws.close();
     return;
   }
 
-  // Core function to process text
+  // Core function: stream GPT-4o output, slice on [.?!], fire TTS per sub-sentence
+  // in parallel, send audio chunks to the client in original order.
   async function processUserText(text) {
     try {
       ws.send(JSON.stringify({ type: 'status', message: 'Tutor is thinking...' }));
-      
+
       let completeResponse = '';
-      
-      // Get the full response from OpenAI Chat Completion
+      let textBuffer = '';
+      let serverSpeakingNotified = false;
+      let audioChain = Promise.resolve();
+
+      const enqueueSentence = (rawSentence) => {
+        const sentence = rawSentence.trim();
+        if (!sentence) return;
+
+        // Mute the mic on the client BEFORE the first audio frame lands
+        if (!serverSpeakingNotified) {
+          serverSpeakingNotified = true;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'server_speaking' }));
+          }
+        }
+
+        // Start TTS immediately (in parallel); serialize WS sends to keep order
+        const ttsPromise = openai.synthesize(sentence).catch((err) => {
+          console.error('TTS error for sentence chunk:', sentence, err);
+          return null;
+        });
+
+        audioChain = audioChain.then(async () => {
+          const buffer = await ttsPromise;
+          if (buffer && ws.readyState === WebSocket.OPEN) {
+            ws.send(buffer);
+          }
+        });
+      };
+
       await openai.sendMessageStream(text, (textChunk) => {
         completeResponse += textChunk;
+        textBuffer += textChunk;
+
+        // Extract every complete sub-sentence ending in . ? !
+        const sentenceRegex = /^([^.?!]*[.?!]+)/;
+        let match;
+        while ((match = sentenceRegex.exec(textBuffer))) {
+          const sentence = match[1];
+          textBuffer = textBuffer.slice(sentence.length);
+          enqueueSentence(sentence);
+        }
       });
 
-      // Send the clean, complete transcript block
-      ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: completeResponse }));
-
-      // Now synthesize the complete response in a single audio stream
-      ws.send(JSON.stringify({ type: 'status', message: 'Tutor is speaking...' }));
-      
-      const audioBuffer = await openai.synthesize(completeResponse);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(audioBuffer);
+      // Flush any trailing fragment without terminating punctuation
+      if (textBuffer.trim().length > 0) {
+        enqueueSentence(textBuffer);
+        textBuffer = '';
       }
 
-      // Tell client that the server is done sending audio chunks
-      ws.send(JSON.stringify({ type: 'status', message: 'Done' }));
+      // Send the full transcript once for the on-screen log
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: completeResponse }));
+      }
+
+      // Wait until every queued audio chunk has hit the wire in order
+      await audioChain;
+
+      // End-of-speech marker so the client can re-arm the mic
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'server_done' }));
+      }
     } catch (err) {
       console.error('Error processing user text:', err);
-      ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
+        ws.send(JSON.stringify({ type: 'server_done' }));
+      }
     }
   }
 
