@@ -62,6 +62,7 @@ wss.on('connection', async (ws) => {
   let deepgram = null;
   let isSessionActive = false;
   let isSummaryCompiled = false; // Prevents duplicate summaries/emails
+  let currentTurn = null;        // { ac: AbortController, cancelled: boolean } for barge-in
 
   // Initialize OpenAI Chat session
   try {
@@ -77,6 +78,14 @@ wss.on('connection', async (ws) => {
   // Core function: stream GPT-4o output, slice on [.?!], fire TTS per sub-sentence
   // in parallel, send audio chunks to the client in original order.
   async function processUserText(text) {
+    // Abort any previous in-flight turn (defensive — should already be cleared).
+    if (currentTurn) {
+      currentTurn.cancelled = true;
+      try { currentTurn.ac.abort(); } catch (e) {}
+    }
+    const turn = { ac: new AbortController(), cancelled: false };
+    currentTurn = turn;
+
     try {
       ws.send(JSON.stringify({ type: 'status', message: 'Tutor is thinking...' }));
 
@@ -87,7 +96,7 @@ wss.on('connection', async (ws) => {
 
       const enqueueSentence = (rawSentence) => {
         const sentence = rawSentence.trim();
-        if (!sentence) return;
+        if (!sentence || turn.cancelled) return;
 
         // Mute the mic on the client BEFORE the first audio frame lands
         if (!serverSpeakingNotified) {
@@ -97,21 +106,25 @@ wss.on('connection', async (ws) => {
           }
         }
 
-        // Start TTS immediately (in parallel); serialize WS sends to keep order
-        const ttsPromise = openai.synthesize(sentence).catch((err) => {
-          console.error('TTS error for sentence chunk:', sentence, err);
+        // Start TTS immediately (in parallel); serialize WS sends to keep order.
+        // Pass the abort signal so an interrupt cancels the in-flight HTTP call.
+        const ttsPromise = openai.synthesize(sentence, turn.ac.signal).catch((err) => {
+          if (err.name !== 'AbortError') {
+            console.error('TTS error for sentence chunk:', sentence, err);
+          }
           return null;
         });
 
         audioChain = audioChain.then(async () => {
           const buffer = await ttsPromise;
-          if (buffer && ws.readyState === WebSocket.OPEN) {
+          if (!turn.cancelled && buffer && ws.readyState === WebSocket.OPEN) {
             ws.send(buffer);
           }
         });
       };
 
       await openai.sendMessageStream(text, (textChunk) => {
+        if (turn.cancelled) return;
         completeResponse += textChunk;
         textBuffer += textChunk;
 
@@ -123,32 +136,36 @@ wss.on('connection', async (ws) => {
           textBuffer = textBuffer.slice(sentence.length);
           enqueueSentence(sentence);
         }
-      });
+      }, turn.ac.signal);
 
       // Flush any trailing fragment without terminating punctuation
-      if (textBuffer.trim().length > 0) {
+      if (!turn.cancelled && textBuffer.trim().length > 0) {
         enqueueSentence(textBuffer);
         textBuffer = '';
       }
 
-      // Send the full transcript once for the on-screen log
-      if (ws.readyState === WebSocket.OPEN) {
+      // Send the full transcript once for the on-screen log (skip on abort)
+      if (!turn.cancelled && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'transcript', speaker: 'tutor', text: completeResponse }));
       }
 
       // Wait until every queued audio chunk has hit the wire in order
       await audioChain;
-
-      // End-of-speech marker so the client can re-arm the mic
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'server_done' }));
-      }
     } catch (err) {
-      console.error('Error processing user text:', err);
+      if (turn.cancelled || err.name === 'AbortError') {
+        console.log('Turn aborted by user barge-in.');
+      } else {
+        console.error('Error processing user text:', err);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
+        }
+      }
+    } finally {
+      // Always emit server_done so the client re-arms the mic, even on abort/error.
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Tutor engine encountered an error' }));
         ws.send(JSON.stringify({ type: 'server_done' }));
       }
+      if (currentTurn === turn) currentTurn = null;
     }
   }
 
@@ -184,6 +201,16 @@ wss.on('connection', async (ws) => {
         if (data.type === 'start') {
           isSessionActive = true;
           ws.send(JSON.stringify({ type: 'status', message: 'Listening...' }));
+        } else if (data.type === 'user_interrupted') {
+          // Barge-in: client detected user voice while tutor was speaking.
+          // Cancel the in-flight GPT-4o stream + queued TTS sends.
+          if (currentTurn) {
+            console.log('User barge-in detected — aborting current turn.');
+            currentTurn.cancelled = true;
+            try { currentTurn.ac.abort(); } catch (e) {}
+          }
+        } else if (data.type === 'user_listening') {
+          // Informational: client has re-armed its mic. No server action needed.
         } else if (data.type === 'stop') {
           isSessionActive = false;
           ws.send(JSON.stringify({ type: 'status', message: 'Tutor is compiling summary...' }));

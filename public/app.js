@@ -16,6 +16,13 @@ let nextStartTime = 0;
 let isTutorSpeaking = false;
 let activeSources = [];
 
+// Voice Activity Detection (barge-in) state
+let vadTimer = null;
+let vadHotFrames = 0;
+const VAD_TICK_MS = 50;
+const VAD_RMS_THRESHOLD = 14;       // raw RMS on 0-127 scale; talking voice ~25-60
+const VAD_HOT_FRAMES_REQUIRED = 5;  // 5 * 50ms = 250ms of sustained voice
+
 // Session markdown for copy-paste summaries
 let sessionMarkdown = '';
 let serverDoneSpeaking = false;
@@ -422,6 +429,7 @@ async function startSession() {
       socket.send(JSON.stringify({ type: 'start' }));
       updateUIState('listening', 'Listening...');
       setupMediaSession();
+      startVAD();
     } else {
       throw new Error('WebSocket connection is not open');
     }
@@ -459,6 +467,7 @@ async function startSession() {
 function stopSession(requestStop = true) {
   isSessionRunning = false;
   isTutorSpeaking = false;
+  stopVAD();
   updateUIState('paused', 'Disconnected');
 
   if (micStream) {
@@ -533,17 +542,27 @@ function handleJsonMessage(message) {
       serverDoneSpeaking = false;
       break;
     case 'server_done':
-      // Last audio frame already on the wire. If nothing is queued for
-      // playback we can re-arm the mic right away, otherwise source.onended
-      // will pick up the transition.
+      // Last audio frame already on the wire. Defensive reset of the recorder
+      // state so the mic stream resumes pushing PCM chunks to Deepgram even if
+      // earlier transitions left a flag stale.
       serverDoneSpeaking = true;
+      if (audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(e => console.error('Failed to resume AudioContext on server_done:', e));
+      }
       if (activeSources.length === 0) {
         isTutorSpeaking = false;
         checkListeningTransition();
       }
+      // If audio is still playing, source.onended will fire the transition.
       break;
     case 'transcript':
       addLog(message.text, message.speaker);
+      // Preemptive mic mute the moment Deepgram returns a final user transcript:
+      // prevents the user's tail-end audio (during the "thinking" window) from
+      // becoming a second overlapping turn before server_speaking arrives.
+      if (message.speaker === 'user') {
+        serverDoneSpeaking = false;
+      }
       break;
     case 'summary':
       // Render the Session Summary Card Modal
@@ -713,6 +732,65 @@ function checkListeningTransition() {
       socket.send(JSON.stringify({ type: 'user_listening' }));
     }
   }
+}
+
+// Voice Activity Detection loop — only acts while the tutor is speaking.
+// When sustained user voice is detected above threshold, fire barge-in.
+function startVAD() {
+  stopVAD();
+  vadHotFrames = 0;
+  vadTimer = setInterval(() => {
+    if (!isTutorSpeaking || !micAnalyser) {
+      vadHotFrames = 0;
+      return;
+    }
+    const data = new Uint8Array(micAnalyser.frequencyBinCount);
+    micAnalyser.getByteTimeDomainData(data);
+    let sumSq = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] - 128;
+      sumSq += v * v;
+    }
+    const rms = Math.sqrt(sumSq / data.length);
+
+    if (rms > VAD_RMS_THRESHOLD) {
+      vadHotFrames++;
+      if (vadHotFrames >= VAD_HOT_FRAMES_REQUIRED) {
+        triggerBargeIn();
+        vadHotFrames = 0;
+      }
+    } else {
+      vadHotFrames = 0;
+    }
+  }, VAD_TICK_MS);
+}
+
+function stopVAD() {
+  if (vadTimer) {
+    clearInterval(vadTimer);
+    vadTimer = null;
+  }
+  vadHotFrames = 0;
+}
+
+function triggerBargeIn() {
+  if (!isTutorSpeaking) return;
+  console.log('[VAD] Barge-in detected — interrupting tutor playback.');
+
+  // Stop every queued audio source immediately so the tutor falls silent.
+  activeSources.forEach(s => { try { s.stop(); } catch (e) {} });
+  activeSources = [];
+  nextStartTime = 0;
+
+  // Tell the server to cancel its in-flight GPT-4o + TTS pipeline.
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'user_interrupted' }));
+  }
+
+  // Reset client state and re-arm the mic.
+  isTutorSpeaking = false;
+  serverDoneSpeaking = true;
+  updateUIState('listening', 'Listening...');
 }
 
 // Handle control button interaction
