@@ -23,12 +23,15 @@ export class DeepgramService {
 
     this.shouldReconnect = true;
 
-    // language=multi restored: locking to English broke Italian understanding
-    // entirely (Ivan was transcribed as garbled English-phonetic text and the
-    // bilingual rule never triggered). Trade-off accepted: occasional Spanish
-    // false-positives on very short Italian utterances. Mitigation lives in
-    // the system prompt LANGUAGE PROTOCOL which still nudges replies to IT/EN.
-    const url = 'wss://api.deepgram.com/v1/listen?model=nova-2&language=multi&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
+    // nova-3 is Deepgram's flagship model with native multilingual code-switching
+    // specifically tuned for EN/IT/ES/FR/DE/PT/NL/JA/HI/RU discrimination.
+    // nova-2 + language=multi was leaking Italian into Spanish on non-trivial
+    // phrases ("Adesso parliamo..." -> "Impuestos gaserimas..."). nova-3 has
+    // markedly better per-utterance language classification.
+    // Rollback path: if nova-3 isn't on the current Deepgram plan, the WS will
+    // close with 4xx; the auto-reconnect loop will then spin visibly in logs.
+    // Fallback to "model=nova-2" if needed.
+    const url = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
 
     console.log('Connecting to Deepgram WebSocket...');
     this.ws = new WebSocket(url, {
