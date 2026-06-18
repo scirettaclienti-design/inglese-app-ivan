@@ -3,11 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../config.js';
+import { MemoryService } from './memory.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbPath = path.join(__dirname, '../memory/db.json');
 const projectsPath = path.join(__dirname, '../memory/projects.md');
 
 // Helper to downsample 24kHz 16-bit PCM buffer to 16kHz 16-bit PCM buffer via linear interpolation
@@ -41,6 +41,9 @@ export class OpenaiService {
     this.history = [];
     this.sessionStartTime = null;
     this.systemInstruction = '';
+    this.memory = new MemoryService();
+    this.boostVocab = [];
+    this.boostErrors = [];
   }
 
   /**
@@ -60,24 +63,21 @@ export class OpenaiService {
       projectsContext = 'Error loading project context.';
     }
 
-    // 2. Read Errors & Vocab Memory
-    let memoryDb = { grammar_errors: [], vocabulary_upgrades: [] };
+    // 2. Selective memory injection: top-3 due vocab + top-2 due errors (SR-driven)
+    let vocabStrings = 'None.';
+    let errorStrings = 'None.';
     try {
-      if (fs.existsSync(dbPath)) {
-        memoryDb = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-      }
+      const db = this.memory.loadDb();
+      const due = this.memory.getDueItems(db);
+      this.boostVocab = due.vocab;
+      this.boostErrors = due.errors;
+      const formatted = this.memory.formatForPrompt(due);
+      vocabStrings = formatted.vocabStrings;
+      errorStrings = formatted.errorStrings;
+      console.log(`memory: injecting ${due.vocab.length} vocab + ${due.errors.length} errors (mastery-aware).`);
     } catch (err) {
-      console.error('Error reading db.json:', err);
+      console.error('Error loading memory db via MemoryService:', err);
     }
-
-    // 3. Format Errors & Vocabulary for prompt injection
-    const errorStrings = memoryDb.grammar_errors.map(err => 
-      `- Incorrect: "${err.incorrect}" -> Correct: "${err.correct}" (Explanation: ${err.explanation})`
-    ).join('\n');
-
-    const vocabStrings = memoryDb.vocabulary_upgrades.map(v => 
-      `- Word: "${v.word}" (Meaning: ${v.meaning}, Context: ${v.context})`
-    ).join('\n');
 
     // 4. Construct Adaptive Didactic System Instructions
     this.systemInstruction = `You are Ivan's English walking coach. You sound like a sharp personal trainer: punchy, warm, energetic.
@@ -121,9 +121,9 @@ TOPICS:
 - Anchor naturally on Ivan's projects when it fits: Dove Vai, Seanfinity Yachts, Mykonos Made in Italy, Parlami, Borgo Pigneto.
 - Otherwise pivot freely to travel, tech, daily life, opinions, culture.
 
-REFERENCE LISTS (use only if a CURRENT-turn cue lands on them — never dump):
-Past errors: ${errorStrings || 'None.'}
-Past vocab: ${vocabStrings || 'None.'}
+TODAY'S BOOST (a tiny rotation chosen by spaced repetition — weave them in naturally when a CURRENT-turn cue lands on them, never recite them, never dump):
+Errors to watch: ${errorStrings}
+Vocab to surface: ${vocabStrings}
 Projects: ${projectsContext}
 
 KICKOFF: Greet Ivan + name one of his projects + ask ONE short open question. All in ≤15 words.`;
@@ -328,9 +328,36 @@ ${transcript}`;
       console.log('OpenAI Analysis JSON output:', jsonText);
 
       const summary = JSON.parse(jsonText);
-      
-      // Save results to local JSON db
-      await this.saveSummaryToDb(summary);
+
+      // Memory pipeline: detect boost usage on the user transcript, apply mastery
+      // progress on the boost set, merge any NEW items from this session, bump meta.
+      try {
+        const userTranscript = this.history
+          .filter(m => m.role === 'user')
+          .map(m => m.content)
+          .join('\n');
+        const db = this.memory.loadDb();
+        const usedVocab = this.memory.detectVocabUsage(this.boostVocab, userTranscript);
+        const repeatedErrors = this.memory.detectErrorRecurrence(
+          this.boostErrors,
+          summary.grammar_errors
+        );
+        this.memory.applyMasteryProgress(
+          db,
+          this.boostVocab,
+          usedVocab,
+          this.boostErrors,
+          repeatedErrors
+        );
+        this.memory.mergeNewItems(db, summary);
+        this.memory.bumpSessionMeta(db);
+        this.memory.saveDb(db);
+        console.log(
+          `memory: progress applied. vocab used=${usedVocab.size}/${this.boostVocab.length}, errors recurred=${repeatedErrors.size}/${this.boostErrors.length}`
+        );
+      } catch (memErr) {
+        console.error('Memory pipeline failed at end of session:', memErr);
+      }
 
       // Email dispatch report (runs in background)
       try {
@@ -362,45 +389,4 @@ ${transcript}`;
     }
   }
 
-  /**
-   * Merge new session results into memory/db.json
-   * @param {object} summary 
-   */
-  async saveSummaryToDb(summary) {
-    try {
-      let currentDb = { grammar_errors: [], vocabulary_upgrades: [] };
-      if (fs.existsSync(dbPath)) {
-        currentDb = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-      }
-
-      // Merge Grammar Errors
-      if (summary.grammar_errors && Array.isArray(summary.grammar_errors)) {
-        summary.grammar_errors.forEach(newErr => {
-          const exists = currentDb.grammar_errors.some(
-            err => err.incorrect.toLowerCase() === newErr.incorrect.toLowerCase()
-          );
-          if (!exists && newErr.incorrect.trim() !== '') {
-            currentDb.grammar_errors.push(newErr);
-          }
-        });
-      }
-
-      // Merge Vocabulary Upgrades
-      if (summary.vocabulary_upgrades && Array.isArray(summary.vocabulary_upgrades)) {
-        summary.vocabulary_upgrades.forEach(newVoc => {
-          const exists = currentDb.vocabulary_upgrades.some(
-            v => v.word.toLowerCase() === newVoc.word.toLowerCase()
-          );
-          if (!exists && newVoc.word.trim() !== '') {
-            currentDb.vocabulary_upgrades.push(newVoc);
-          }
-        });
-      }
-
-      // Write back to db.json
-      fs.writeFileSync(dbPath, JSON.stringify(currentDb, null, 2), 'utf8');
-    } catch (err) {
-      console.error('Error writing to memory db.json:', err);
-    }
-  }
 }

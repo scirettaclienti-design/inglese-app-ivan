@@ -1,0 +1,49 @@
+Sono Ivano Sciretta (AI SPACE / iSpace.works). Sto continuando lo sviluppo del Headless English Voice Tutor — una PWA mobile per imparare inglese hands-free durante camminate, con telefono in tasca e schermo bloccato.
+
+CONTESTO IMMEDIATO
+Prima di rispondermi, leggi questi due file in ordine:
+1. /Users/mac2023ivanosciretta/inglese app ivan/RIEPILOGO.md  (stato completo, file map, commit chain, problemi aperti, roadmap)
+2. /Users/mac2023ivanosciretta/inglese app ivan/memory/db.json (schema corrente della memoria didattica V1)
+
+STACK in sintesi
+- Backend Node.js + WebSocket su Render (free tier). Path: /Users/mac2023ivanosciretta/inglese app ivan
+- Frontend PWA vanilla JS su Vercel
+- STT: Deepgram nova-3 con language=multi
+- LLM: OpenAI GPT-4o streaming
+- TTS: OpenAI tts-1 alloy con chunk-streaming su punteggiatura
+- Repo GitHub: scirettaclienti-design/inglese-app-ivan, branch main, push diretto, Render auto-deploy
+- Deploy live: https://inglese-app-ivan.onrender.com
+
+ULTIMO COMMIT
+d117fec — upgrade Deepgram a nova-3 + sezione STT robustness nel system prompt per recuperare input italiano misclassificato come spagnolo. Da validare con test vocale.
+
+DOVE SIAMO RIMASTI
+Ho fatto un walk-test su iPhone e Deepgram nova-2 con language=multi stava confondendo l'italiano con lo spagnolo (es. "Adesso parliamo di ispezione" diventava "Impuestos gaserimas todo un inicio de inspección"). Il system prompt è stato già reso resiliente a questo (deve trattare lo spagnolo gibberish come italiano misclassificato). Ho appena pushato l'upgrade a nova-3 — deve essere testato dal vivo.
+
+PROSSIMO PASSO PROGRAMMATO
+Se nova-3 funziona, parto col refactor di memory/db.json (sezione "B1+B2+B3" del report strategico già concordato e dettagliato in RIEPILOGO.md):
+- Schema evoluto con mastery_level (0-4), times_used_by_ivan, next_inject_at
+- Iniezione selettiva top-3 vocaboli + top-2 watch errors nel system prompt (non più dump dell'intera storia)
+- Spaced repetition: dopo successo, next_inject_at posticipato (1d→3d→7d→14d→30d)
+- Detection post-sessione: estendere compileSessionSummary per capire se Ivano ha usato i boost words del giorno
+- Tutto incapsulato in un nuovo modulo services/memory.js
+- Migrazione lossless del db.json esistente (backup automatico)
+
+PREFERENZE / VINCOLI durevoli
+- Costi: solo free/cheap tier
+- Hands-free: schermo bloccato, telefono in tasca, sessioni 20-30 min
+- Latenza percepita: <500ms primo audio chunk
+- Italiano + Inglese (no Spanish leak)
+- No emoji in chat con me (ma esempi in markdown con simboli neutri OK)
+- Sono frequentemente in mobilità, dammi risposte concrete e attive
+- Sei autorizzato a fare git add/commit/push direttamente quando ti chiedo "esegui pipeline git" o equivalente — usa hash specifici dei file modificati, mai "git add ."
+
+ROADMAP RESIDUA dopo db.json
+1. AudioWorklet refactor (sostituisce ScriptProcessorNode + sposta VAD su audio thread non-throttled da iOS) — 3-4h
+2. Service Worker keepalive WebSocket — utilità marginale, bassa priorità
+3. Session streak / engagement nel session_meta
+
+PROBLEMI APERTI MINORI
+- Freeze sporadico al 2° turno: senza log Render del momento esatto non isolabile. Se ricapita serve screenshot console iOS Safari + log Render.
+
+Inizia leggendo RIEPILOGO.md. Poi confermami che hai il quadro completo e dimmi cosa vuoi fare per primo. Se hai dubbi sullo stato di un file, controlla direttamente sul filesystem prima di chiedere.
