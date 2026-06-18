@@ -20,8 +20,14 @@ let activeSources = [];
 let vadTimer = null;
 let vadHotFrames = 0;
 const VAD_TICK_MS = 50;
-const VAD_RMS_THRESHOLD = 14;       // raw RMS on 0-127 scale; talking voice ~25-60
-const VAD_HOT_FRAMES_REQUIRED = 5;  // 5 * 50ms = 250ms of sustained voice
+// Tuned for hands-free walking sessions: footstep impacts, wind buffeting and
+// passing traffic can spike raw RMS to 16-20 transiently. Threshold 22 sits
+// above that noise floor but well below sustained voice (~25-60). Combined
+// with 9 hot frames (=450ms of CONTINUOUS energy) it filters virtually all
+// false-positive barge-ins while still cutting the tutor within ~half a second
+// of real speech.
+const VAD_RMS_THRESHOLD = 22;
+const VAD_HOT_FRAMES_REQUIRED = 9;
 
 // Session markdown for copy-paste summaries
 let sessionMarkdown = '';
@@ -208,40 +214,69 @@ class ConnectionStateManager {
   constructor() {
     this.state = 'DISCONNECTED'; // DISCONNECTED, PINGING, WAKING_UP, CONNECTING, READY
     this.isReconnecting = false;
+    // Set to true when the socket drops while a session is actively running.
+    // Switches the UI into "quiet reconnect" mode (no full-screen overlay) and
+    // triggers an automatic startSession() once the new socket reaches READY.
+    this.wasSessionActiveOnDrop = false;
   }
 
   updateState(newState, detail = '') {
     this.state = newState;
     console.log(`[Connection State] Transitioned to ${newState} ${detail ? `(${detail})` : ''}`);
-    
-    // Update UI elements based on state
+
+    // Quiet reconnect: while resuming after a mid-session drop, keep the
+    // wake-up overlay hidden and show a minimal "Reconnecting..." badge.
+    const quiet = this.wasSessionActiveOnDrop;
+
     switch (newState) {
       case 'PINGING':
       case 'WAKING_UP':
-        wakeUpOverlay.classList.remove('hidden');
-        actionBtn.setAttribute('disabled', 'true');
-        statusBadge.className = 'status-badge loading';
-        statusBadge.innerText = 'Waking up...';
-        helperText.innerText = 'Waiting for tutor engine...';
-        
-        // Update overlay text to show it is indeed waking up
-        const overlayTitle = wakeUpOverlay.querySelector('h2');
-        const overlayDesc = wakeUpOverlay.querySelector('p');
-        if (overlayTitle) overlayTitle.innerText = 'Tutor is waking up...';
-        if (overlayDesc) overlayDesc.innerText = 'Initializing backend cloud engine. This may take 20-30 seconds if the server was asleep.';
+        if (quiet) {
+          wakeUpOverlay.classList.add('hidden');
+          actionBtn.setAttribute('disabled', 'true');
+          statusBadge.className = 'status-badge loading';
+          statusBadge.innerText = 'Reconnecting...';
+          helperText.innerText = 'Restoring connection — keep walking.';
+        } else {
+          wakeUpOverlay.classList.remove('hidden');
+          actionBtn.setAttribute('disabled', 'true');
+          statusBadge.className = 'status-badge loading';
+          statusBadge.innerText = 'Waking up...';
+          helperText.innerText = 'Waiting for tutor engine...';
+
+          const overlayTitle = wakeUpOverlay.querySelector('h2');
+          const overlayDesc = wakeUpOverlay.querySelector('p');
+          if (overlayTitle) overlayTitle.innerText = 'Tutor is waking up...';
+          if (overlayDesc) overlayDesc.innerText = 'Initializing backend cloud engine. This may take 20-30 seconds if the server was asleep.';
+        }
         break;
 
       case 'CONNECTING':
-        wakeUpOverlay.classList.remove('hidden');
-        actionBtn.setAttribute('disabled', 'true');
-        statusBadge.className = 'status-badge loading';
-        statusBadge.innerText = 'Connecting...';
+        if (quiet) {
+          wakeUpOverlay.classList.add('hidden');
+          actionBtn.setAttribute('disabled', 'true');
+          statusBadge.className = 'status-badge loading';
+          statusBadge.innerText = 'Reconnecting...';
+          helperText.innerText = 'Restoring connection — keep walking.';
+        } else {
+          wakeUpOverlay.classList.remove('hidden');
+          actionBtn.setAttribute('disabled', 'true');
+          statusBadge.className = 'status-badge loading';
+          statusBadge.innerText = 'Connecting...';
+        }
         break;
 
       case 'READY':
         wakeUpOverlay.classList.add('hidden');
         actionBtn.removeAttribute('disabled');
         updateUIState('paused', 'Ready');
+        if (this.wasSessionActiveOnDrop) {
+          this.wasSessionActiveOnDrop = false;
+          console.log('[Connection State] Auto-resuming session after reconnect.');
+          setTimeout(() => {
+            if (!isSessionRunning) startSession();
+          }, 150);
+        }
         break;
 
       case 'DISCONNECTED':
@@ -340,9 +375,16 @@ class ConnectionStateManager {
   }
 
   handleDisconnect() {
-    stopSession(false); // Make sure we clean up audio streams but don't try to send WS message if closed
-    this.updateState('DISCONNECTED');
-    
+    if (this.isReconnecting) return;
+    this.isReconnecting = true;
+
+    // Capture intent BEFORE stopSession() clears isSessionRunning. If the user
+    // was mid-conversation, remember it so the new socket auto-resumes once READY.
+    const wasMidSession = isSessionRunning;
+    if (wasMidSession) this.wasSessionActiveOnDrop = true;
+
+    stopSession(false);
+
     if (socket) {
       socket.onopen = null;
       socket.onmessage = null;
@@ -351,14 +393,22 @@ class ConnectionStateManager {
       socket = null;
     }
 
-    if (!this.isReconnecting) {
-      this.isReconnecting = true;
-      console.log('[Connection State] Attempting reconnection in 3s...');
-      setTimeout(() => {
-        this.isReconnecting = false;
-        this.startConnection();
-      }, 3000);
+    // Mid-session drops: skip the DISCONNECTED full-overlay state entirely and
+    // reconnect immediately. The quiet-reconnect UI is driven by
+    // wasSessionActiveOnDrop, set above. We still need to reset the internal
+    // state value so startConnection() does not short-circuit on its READY guard.
+    if (!wasMidSession) {
+      this.updateState('DISCONNECTED');
+    } else {
+      this.state = 'DISCONNECTED';
     }
+
+    const delay = wasMidSession ? 0 : 3000;
+    console.log(`[Connection State] Reconnecting in ${delay}ms (mid-session=${wasMidSession})...`);
+    setTimeout(() => {
+      this.isReconnecting = false;
+      this.startConnection();
+    }, delay);
   }
 }
 

@@ -31,7 +31,11 @@ export class DeepgramService {
     // Rollback path: if nova-3 isn't on the current Deepgram plan, the WS will
     // close with 4xx; the auto-reconnect loop will then spin visibly in logs.
     // Fallback to "model=nova-2" if needed.
-    const url = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=300';
+    // endpointing=1500: wait 1.5s of continuous silence before finalizing an
+    // utterance. Lets Ivan pause mid-sentence to think without prematurely
+    // triggering GPT-4o processing. Trade-off: short replies feel ~1.2s slower,
+    // accepted because hands-free walking sessions value tolerance > snap.
+    const url = 'wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&punctuate=true&endpointing=1500';
 
     console.log('Connecting to Deepgram WebSocket...');
     this.ws = new WebSocket(url, {
